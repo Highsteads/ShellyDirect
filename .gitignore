@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+__MACOSX/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets (never commit)
+Contents/Server Plugin/secrets.py
+
+# Personal/local files
+CLAUDE.md
+*.pdf

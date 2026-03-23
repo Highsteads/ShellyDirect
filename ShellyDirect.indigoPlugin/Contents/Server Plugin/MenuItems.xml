@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<MenuItems>
+
+	<MenuItem id="menuDiscoverDevices">
+		<Name>Discover Shelly Devices</Name>
+		<CallbackMethod>menuDiscoverDevices</CallbackMethod>
+	</MenuItem>
+
+	<MenuItem id="menuDeviceHealthSummary">
+		<Name>Device Health Summary</Name>
+		<CallbackMethod>menuDeviceHealthSummary</CallbackMethod>
+	</MenuItem>
+
+	<MenuItem id="menuCheckFirmware">
+		<Name>Check Firmware Versions</Name>
+		<CallbackMethod>menuCheckFirmware</CallbackMethod>
+	</MenuItem>
+
+	<MenuItem id="menuResetWebhooks">
+		<Name>Reconfigure Webhooks (All Devices)</Name>
+		<CallbackMethod>menuResetWebhooks</CallbackMethod>
+	</MenuItem>
+
+	<MenuItem id="menuExportEnergyHistory">
+		<Name>Export Energy History to CSV</Name>
+		<CallbackMethod>menuExportEnergyHistory</CallbackMethod>
+	</MenuItem>
+
+</MenuItems>

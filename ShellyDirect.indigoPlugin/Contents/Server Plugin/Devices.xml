@@ -1,0 +1,701 @@
+<?xml version="1.0"?>
+<Devices>
+
+	<!-- ============================================================
+	     shellyRelay
+	     Single or multi-channel relay with optional power monitoring.
+	     Covers: Plus Plug UK/S/IT/US, Shelly 1/1PM/Mini, Pro 1/1PM,
+	             Gen 3/4 variants, individual channels of Plus 2PM / Pro 4PM.
+	     ============================================================ -->
+	<Device type="relay" id="shellyRelay">
+		<Name>Shelly Relay</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Local IP address of the Shelly device (e.g. 192.168.4.10)</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="channel_id" type="menu" defaultValue="0">
+				<Label>Channel:</Label>
+				<List>
+					<Option value="0">0 - Single channel or Ch 1</Option>
+					<Option value="1">1 - Ch 2 (Plus 2PM / Pro 4PM)</Option>
+					<Option value="2">2 - Ch 3 (Pro 4PM)</Option>
+					<Option value="3">3 - Ch 4 (Pro 4PM)</Option>
+				</List>
+			</Field>
+			<Field id="hlpChan" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Use 0 for single-channel devices. For Pro 4PM or Plus 2PM create one device per channel.</Label>
+			</Field>
+			<Field id="sep2" type="separator"/>
+			<Field id="has_pm" type="checkbox" defaultValue="true">
+				<Label>Has Power Monitoring (PM):</Label>
+			</Field>
+			<Field id="hlpPm" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Enable for 1PM, 1PM Mini, Plus Plug UK, Plus 2PM, Pro 4PM. Disable for Shelly 1 and 1 Mini.</Label>
+			</Field>
+			<Field id="sep3" type="separator"/>
+			<Field id="addon_temp" type="checkbox" defaultValue="false">
+				<Label>Has Temperature Add-on:</Label>
+			</Field>
+			<Field id="hlpAddon" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Enable if a Shelly Plus Add-on with DS18B20 probe is fitted. Reads probe 0 into addon_temp_c state.</Label>
+			</Field>
+			<Field id="sep4" type="separator"/>
+			<Field id="lock_off" type="checkbox" defaultValue="false">
+				<Label>Lock Off (power monitor only):</Label>
+			</Field>
+			<Field id="hlpLock" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Prevent this device being turned off. Turn On commands still work.</Label>
+			</Field>
+			<Field id="sep5" type="separator"/>
+			<Field id="power_alert_enabled" type="checkbox" defaultValue="false">
+				<Label>High Power Alert:</Label>
+			</Field>
+			<Field id="power_alert_watts" type="textfield" defaultValue="2000"
+			       visibleBindingId="power_alert_enabled" visibleBindingValue="true">
+				<Label>Alert Threshold (W):</Label>
+			</Field>
+			<Field id="hlpAlert" type="label" fontSize="mini" alignWithControl="true"
+			       visibleBindingId="power_alert_enabled" visibleBindingValue="true">
+				<Label>Fires highPowerAlert trigger and logs a warning when power exceeds this value.</Label>
+			</Field>
+			<Field id="sep6" type="separator"/>
+			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
+				<Label>Mirror States to Variables:</Label>
+			</Field>
+			<Field id="hlpMirror" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Write key states to Indigo variables in the ShellyDirect folder for use in control pages and scripts.</Label>
+			</Field>
+			<Field id="sep7" type="separator"/>
+			<Field id="poll_interval" type="menu" defaultValue="30">
+				<Label>Poll Interval:</Label>
+				<List>
+					<Option value="10">Every 10 seconds</Option>
+					<Option value="30">Every 30 seconds (default)</Option>
+					<Option value="60">Every 60 seconds</Option>
+					<Option value="120">Every 2 minutes</Option>
+				</List>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="power_watts">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Power (W)</TriggerLabel>
+				<ControlPageLabel>Power</ControlPageLabel>
+			</State>
+			<State id="voltage">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Voltage (V)</TriggerLabel>
+				<ControlPageLabel>Voltage</ControlPageLabel>
+			</State>
+			<State id="current_amps">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Current (A)</TriggerLabel>
+				<ControlPageLabel>Current</ControlPageLabel>
+			</State>
+			<State id="energy_kwh_today">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Energy Today (kWh)</TriggerLabel>
+				<ControlPageLabel>Today kWh</ControlPageLabel>
+			</State>
+			<State id="energy_kwh_month">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Energy This Month (kWh)</TriggerLabel>
+				<ControlPageLabel>Month kWh</ControlPageLabel>
+			</State>
+			<State id="energy_cost_today">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Energy Cost Today</TriggerLabel>
+				<ControlPageLabel>Cost Today</ControlPageLabel>
+			</State>
+			<State id="energy_cost_month">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Energy Cost This Month</TriggerLabel>
+				<ControlPageLabel>Cost Month</ControlPageLabel>
+			</State>
+			<State id="device_temp_c">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Device Temperature (C)</TriggerLabel>
+				<ControlPageLabel>Dev Temp</ControlPageLabel>
+			</State>
+			<State id="addon_temp_c">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Add-on Probe Temperature (C)</TriggerLabel>
+				<ControlPageLabel>Probe Temp</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
+	     shellyUni  -  Shelly Plus Uni
+	                   1x relay output, 2x digital inputs, 2x analog voltmeters
+	     ============================================================ -->
+	<Device type="relay" id="shellyUni">
+		<Name>Shelly Plus Uni</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Local IP address of the Shelly Plus Uni (e.g. 192.168.4.20)</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
+				<Label>Mirror States to Variables:</Label>
+			</Field>
+			<Field id="hlpMirror" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Write key states to Indigo variables in the ShellyDirect folder.</Label>
+			</Field>
+			<Field id="sep2" type="separator"/>
+			<Field id="poll_interval" type="menu" defaultValue="30">
+				<Label>Poll Interval:</Label>
+				<List>
+					<Option value="10">Every 10 seconds</Option>
+					<Option value="30">Every 30 seconds (default)</Option>
+					<Option value="60">Every 60 seconds</Option>
+					<Option value="120">Every 2 minutes</Option>
+				</List>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="input0">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Digital Input 0</TriggerLabel>
+				<ControlPageLabel>Input 0</ControlPageLabel>
+			</State>
+			<State id="input1">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Digital Input 1</TriggerLabel>
+				<ControlPageLabel>Input 1</ControlPageLabel>
+			</State>
+			<State id="voltage0">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Analog Input 0 (V)</TriggerLabel>
+				<ControlPageLabel>Analog 0</ControlPageLabel>
+			</State>
+			<State id="voltage1">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Analog Input 1 (V)</TriggerLabel>
+				<ControlPageLabel>Analog 1</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
+	     shellyCover  -  Roller shutter / blind / gate motor
+	     Covers: Plus 2PM in cover mode, Pro 2PM in cover mode
+	     onOffState: True=open, False=closed
+	     tiltCurrentPosition / tiltTargetPosition: venetian blind slat angle
+	     ============================================================ -->
+	<Device type="relay" id="shellyCover">
+		<Name>Shelly Cover / Roller</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Local IP address of the Shelly device configured in cover mode (e.g. 192.168.4.30)</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
+				<Label>Mirror States to Variables:</Label>
+			</Field>
+			<Field id="hlpMirror" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Write key states to Indigo variables in the ShellyDirect folder.</Label>
+			</Field>
+			<Field id="sep2" type="separator"/>
+			<Field id="poll_interval" type="menu" defaultValue="10">
+				<Label>Poll Interval:</Label>
+				<List>
+					<Option value="5">Every 5 seconds</Option>
+					<Option value="10">Every 10 seconds (default for covers)</Option>
+					<Option value="30">Every 30 seconds</Option>
+					<Option value="60">Every 60 seconds</Option>
+				</List>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="coverState">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Cover State</TriggerLabel>
+				<ControlPageLabel>State</ControlPageLabel>
+			</State>
+			<State id="currentPosition">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Current Position (0-100)</TriggerLabel>
+				<ControlPageLabel>Position</ControlPageLabel>
+			</State>
+			<State id="targetPosition">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Target Position (0-100)</TriggerLabel>
+				<ControlPageLabel>Target</ControlPageLabel>
+			</State>
+			<State id="tiltCurrentPosition">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Tilt Current Position (0-100)</TriggerLabel>
+				<ControlPageLabel>Tilt</ControlPageLabel>
+			</State>
+			<State id="tiltTargetPosition">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Tilt Target Position (0-100)</TriggerLabel>
+				<ControlPageLabel>Tilt Target</ControlPageLabel>
+			</State>
+			<State id="obstructed">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Obstruction Detected</TriggerLabel>
+				<ControlPageLabel>Obstructed</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
+	     shellyDimmer  -  Dimmer devices
+	     Covers: Plus Dimmer 0/1-10V PM, Wall Dimmer, Pro Dimmer 1PM/2PM
+	     ============================================================ -->
+	<Device type="dimmer" id="shellyDimmer">
+		<Name>Shelly Dimmer</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Local IP address of the Shelly dimmer (e.g. 192.168.4.40)</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="channel_id" type="menu" defaultValue="0">
+				<Label>Channel:</Label>
+				<List>
+					<Option value="0">0 - Single channel or Ch 1</Option>
+					<Option value="1">1 - Ch 2 (Pro Dimmer 2PM)</Option>
+				</List>
+			</Field>
+			<Field id="sep2" type="separator"/>
+			<Field id="has_pm" type="checkbox" defaultValue="true">
+				<Label>Has Power Monitoring (PM):</Label>
+			</Field>
+			<Field id="sep3" type="separator"/>
+			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
+				<Label>Mirror States to Variables:</Label>
+			</Field>
+			<Field id="hlpMirror" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Write key states to Indigo variables in the ShellyDirect folder.</Label>
+			</Field>
+			<Field id="sep4" type="separator"/>
+			<Field id="poll_interval" type="menu" defaultValue="30">
+				<Label>Poll Interval:</Label>
+				<List>
+					<Option value="10">Every 10 seconds</Option>
+					<Option value="30">Every 30 seconds (default)</Option>
+					<Option value="60">Every 60 seconds</Option>
+				</List>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="brightnessLevel">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Brightness (0-100)</TriggerLabel>
+				<ControlPageLabel>Brightness</ControlPageLabel>
+			</State>
+			<State id="power_watts">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Power (W)</TriggerLabel>
+				<ControlPageLabel>Power</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
+	     shellyHT  -  Temperature and humidity sensor (battery, push model)
+	     Device pushes data via webhook when it wakes. Cannot be polled.
+	     ============================================================ -->
+	<Device type="sensor" id="shellyHT">
+		<Name>Shelly H&amp;T Sensor</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>IP address of this sensor. The plugin will configure webhooks automatically when the device is reachable.</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
+				<Label>Mirror States to Variables:</Label>
+			</Field>
+			<Field id="hlpMirror" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Write temperature and humidity to Indigo variables in the ShellyDirect folder.</Label>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="sensorValue">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Temperature (C)</TriggerLabel>
+				<ControlPageLabel>Temperature</ControlPageLabel>
+			</State>
+			<State id="humidity">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Humidity (%)</TriggerLabel>
+				<ControlPageLabel>Humidity</ControlPageLabel>
+			</State>
+			<State id="battery_pct">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Battery (%)</TriggerLabel>
+				<ControlPageLabel>Battery</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
+	     shellyI4  -  4-input device (mains powered, pollable)
+	     Covers: Plus i4 (230V AC), Plus i4 DC (12V DC)
+	     ============================================================ -->
+	<Device type="sensor" id="shellyI4">
+		<Name>Shelly Plus i4</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Local IP address of the Shelly Plus i4 (e.g. 192.168.4.50)</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
+				<Label>Mirror States to Variables:</Label>
+			</Field>
+			<Field id="hlpMirror" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Write input states to Indigo variables in the ShellyDirect folder.</Label>
+			</Field>
+			<Field id="sep2" type="separator"/>
+			<Field id="poll_interval" type="menu" defaultValue="10">
+				<Label>Poll Interval:</Label>
+				<List>
+					<Option value="5">Every 5 seconds</Option>
+					<Option value="10">Every 10 seconds (default)</Option>
+					<Option value="30">Every 30 seconds</Option>
+				</List>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="sensorValue">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Input 0 State</TriggerLabel>
+				<ControlPageLabel>Input 0</ControlPageLabel>
+			</State>
+			<State id="input1">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Input 1 State</TriggerLabel>
+				<ControlPageLabel>Input 1</ControlPageLabel>
+			</State>
+			<State id="input2">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Input 2 State</TriggerLabel>
+				<ControlPageLabel>Input 2</ControlPageLabel>
+			</State>
+			<State id="input3">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Input 3 State</TriggerLabel>
+				<ControlPageLabel>Input 3</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
+	     shellySmoke  -  Smoke detector (battery, push model)
+	     ============================================================ -->
+	<Device type="sensor" id="shellySmoke">
+		<Name>Shelly Smoke Detector</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>IP address of this sensor. Webhooks configured automatically when reachable.</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
+				<Label>Mirror States to Variables:</Label>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="sensorValue">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Smoke Alarm</TriggerLabel>
+				<ControlPageLabel>Smoke</ControlPageLabel>
+			</State>
+			<State id="battery_pct">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Battery (%)</TriggerLabel>
+				<ControlPageLabel>Battery</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
+	     shellyFlood  -  Water / flood sensor (battery, push model)
+	     ============================================================ -->
+	<Device type="sensor" id="shellyFlood">
+		<Name>Shelly Flood Sensor</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>IP address of this sensor. Webhooks configured automatically when reachable.</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
+				<Label>Mirror States to Variables:</Label>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="sensorValue">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Flood Detected</TriggerLabel>
+				<ControlPageLabel>Flood</ControlPageLabel>
+			</State>
+			<State id="temperature">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Temperature (C)</TriggerLabel>
+				<ControlPageLabel>Temperature</ControlPageLabel>
+			</State>
+			<State id="battery_pct">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Battery (%)</TriggerLabel>
+				<ControlPageLabel>Battery</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
+	     shellyEM  -  Energy meter (no switching, monitoring only)
+	     Covers: Pro EM (1-phase), Pro 3EM / 3EM Gen 3 (3-phase), Pro 3EM-400
+	     ============================================================ -->
+	<Device type="sensor" id="shellyEM">
+		<Name>Shelly Energy Meter</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Local IP address of the Shelly energy meter (e.g. 192.168.4.60)</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="is_3phase" type="checkbox" defaultValue="false">
+				<Label>3-Phase Meter:</Label>
+			</Field>
+			<Field id="hlp3ph" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Enable for Pro 3EM and 3EM Gen 3. Disable for single-phase Pro EM.</Label>
+			</Field>
+			<Field id="sep2" type="separator"/>
+			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
+				<Label>Mirror States to Variables:</Label>
+			</Field>
+			<Field id="hlpMirror" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Write key states to Indigo variables in the ShellyDirect folder.</Label>
+			</Field>
+			<Field id="sep3" type="separator"/>
+			<Field id="poll_interval" type="menu" defaultValue="30">
+				<Label>Poll Interval:</Label>
+				<List>
+					<Option value="10">Every 10 seconds</Option>
+					<Option value="30">Every 30 seconds (default)</Option>
+					<Option value="60">Every 60 seconds</Option>
+				</List>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="sensorValue">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Total Active Power (W)</TriggerLabel>
+				<ControlPageLabel>Total Power</ControlPageLabel>
+			</State>
+			<State id="voltage_a">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Voltage Phase A (V)</TriggerLabel>
+				<ControlPageLabel>V Phase A</ControlPageLabel>
+			</State>
+			<State id="current_a">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Current Phase A (A)</TriggerLabel>
+				<ControlPageLabel>I Phase A</ControlPageLabel>
+			</State>
+			<State id="power_a">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Active Power Phase A (W)</TriggerLabel>
+				<ControlPageLabel>P Phase A</ControlPageLabel>
+			</State>
+			<State id="voltage_b">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Voltage Phase B (V)</TriggerLabel>
+				<ControlPageLabel>V Phase B</ControlPageLabel>
+			</State>
+			<State id="current_b">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Current Phase B (A)</TriggerLabel>
+				<ControlPageLabel>I Phase B</ControlPageLabel>
+			</State>
+			<State id="power_b">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Active Power Phase B (W)</TriggerLabel>
+				<ControlPageLabel>P Phase B</ControlPageLabel>
+			</State>
+			<State id="voltage_c">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Voltage Phase C (V)</TriggerLabel>
+				<ControlPageLabel>V Phase C</ControlPageLabel>
+			</State>
+			<State id="current_c">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Current Phase C (A)</TriggerLabel>
+				<ControlPageLabel>I Phase C</ControlPageLabel>
+			</State>
+			<State id="power_c">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Active Power Phase C (W)</TriggerLabel>
+				<ControlPageLabel>P Phase C</ControlPageLabel>
+			</State>
+			<State id="energy_kwh_today">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Energy Today (kWh)</TriggerLabel>
+				<ControlPageLabel>Today kWh</ControlPageLabel>
+			</State>
+			<State id="energy_kwh_month">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Energy This Month (kWh)</TriggerLabel>
+				<ControlPageLabel>Month kWh</ControlPageLabel>
+			</State>
+			<State id="energy_cost_today">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Energy Cost Today</TriggerLabel>
+				<ControlPageLabel>Cost Today</ControlPageLabel>
+			</State>
+			<State id="energy_cost_month">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Energy Cost This Month</TriggerLabel>
+				<ControlPageLabel>Cost Month</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
+	     shellyRGBW  -  RGBW LED controller
+	     Covers: Plus RGBW PM
+	     ============================================================ -->
+	<Device type="dimmer" id="shellyRGBW">
+		<Name>Shelly RGBW</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Local IP address of the Shelly RGBW PM (e.g. 192.168.4.70)</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
+				<Label>Mirror States to Variables:</Label>
+			</Field>
+			<Field id="hlpMirror" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Write key states to Indigo variables in the ShellyDirect folder.</Label>
+			</Field>
+			<Field id="sep2" type="separator"/>
+			<Field id="poll_interval" type="menu" defaultValue="30">
+				<Label>Poll Interval:</Label>
+				<List>
+					<Option value="10">Every 10 seconds</Option>
+					<Option value="30">Every 30 seconds (default)</Option>
+					<Option value="60">Every 60 seconds</Option>
+				</List>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="brightnessLevel">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Brightness (0-100)</TriggerLabel>
+				<ControlPageLabel>Brightness</ControlPageLabel>
+			</State>
+			<State id="redLevel">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Red (0-255)</TriggerLabel>
+				<ControlPageLabel>Red</ControlPageLabel>
+			</State>
+			<State id="greenLevel">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Green (0-255)</TriggerLabel>
+				<ControlPageLabel>Green</ControlPageLabel>
+			</State>
+			<State id="blueLevel">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Blue (0-255)</TriggerLabel>
+				<ControlPageLabel>Blue</ControlPageLabel>
+			</State>
+			<State id="whiteLevel">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>White (0-255)</TriggerLabel>
+				<ControlPageLabel>White</ControlPageLabel>
+			</State>
+			<State id="colorMode">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Color Mode</TriggerLabel>
+				<ControlPageLabel>Mode</ControlPageLabel>
+			</State>
+			<State id="power_watts">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Power (W)</TriggerLabel>
+				<ControlPageLabel>Power</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+</Devices>

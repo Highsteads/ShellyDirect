@@ -1,0 +1,72 @@
+<?xml version="1.0"?>
+<Events>
+
+	<!-- ── Button Input Pressed ─────────────────────────────────── -->
+	<!--
+	     Fires when any physical button input on a Shelly device is pressed.
+	     Supported press types: single, double, long.
+	     Supported device types: shellyRelay (input 0, channel 0 only),
+	                             shellyUni (inputs 0 and 1),
+	                             shellyI4 (inputs 0-3).
+	-->
+	<Event id="inputButtonPress">
+		<Name>Button Input Pressed</Name>
+		<ConfigUI>
+			<Field id="deviceId" type="menu" defaultValue="any">
+				<Label>Device:</Label>
+				<List class="self" filter="self" method="getInputDevices"/>
+			</Field>
+			<Field id="inputId" type="menu" defaultValue="any">
+				<Label>Input:</Label>
+				<List>
+					<Option value="any">Any input</Option>
+					<Option value="0">Input 0</Option>
+					<Option value="1">Input 1</Option>
+					<Option value="2">Input 2</Option>
+					<Option value="3">Input 3</Option>
+				</List>
+			</Field>
+			<Field id="pressType" type="menu" defaultValue="any">
+				<Label>Press Type:</Label>
+				<List>
+					<Option value="any">Any press</Option>
+					<Option value="single">Single press</Option>
+					<Option value="double">Double press</Option>
+					<Option value="long">Long press</Option>
+				</List>
+			</Field>
+		</ConfigUI>
+	</Event>
+
+	<!-- ── Device Went Offline ──────────────────────────────────── -->
+	<!--
+	     Fires when a device transitions from online to offline.
+	     Triggered by failed poll or stale timeout.
+	-->
+	<Event id="deviceWentOffline">
+		<Name>Device Went Offline</Name>
+		<ConfigUI>
+			<Field id="deviceId" type="menu" defaultValue="any">
+				<Label>Device:</Label>
+				<List class="self" filter="self" method="getAllShellyDevices"/>
+			</Field>
+		</ConfigUI>
+	</Event>
+
+	<!-- ── High Power Alert ─────────────────────────────────────── -->
+	<!--
+	     Fires when a PM device's power exceeds its per-device threshold.
+	     Threshold is configured in the device config (High Power Alert section).
+	     Only fires on the rising edge (first breach); resets when power drops below threshold.
+	-->
+	<Event id="highPowerAlert">
+		<Name>High Power Alert</Name>
+		<ConfigUI>
+			<Field id="deviceId" type="menu" defaultValue="any">
+				<Label>Device:</Label>
+				<List class="self" filter="self" method="getPMDevices"/>
+			</Field>
+		</ConfigUI>
+	</Event>
+
+</Events>

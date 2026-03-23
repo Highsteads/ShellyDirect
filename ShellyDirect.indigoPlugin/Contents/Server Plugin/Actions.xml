@@ -1,0 +1,109 @@
+<?xml version="1.0"?>
+<Actions>
+
+	<!-- ── Relay: timed on ──────────────────────────────────────── -->
+	<Action id="actionOnForSeconds" deviceFilter="self.shellyRelay" uiPath="Advanced">
+		<Name>Turn On For N Seconds</Name>
+		<CallbackMethod>actionOnForSeconds</CallbackMethod>
+		<ConfigUI>
+			<Field id="seconds" type="textfield" defaultValue="1">
+				<Label>Seconds:</Label>
+			</Field>
+			<Field id="hlp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Relay turns on then switches off after this many seconds (handled on-device). Use 1s for garage door triggers.</Label>
+			</Field>
+		</ConfigUI>
+	</Action>
+
+	<!-- ── Cover / Roller ───────────────────────────────────────── -->
+	<Action id="actionCoverOpen" deviceFilter="self.shellyCover" uiPath="Advanced">
+		<Name>Open Cover</Name>
+		<CallbackMethod>actionCoverOpen</CallbackMethod>
+	</Action>
+
+	<Action id="actionCoverClose" deviceFilter="self.shellyCover" uiPath="Advanced">
+		<Name>Close Cover</Name>
+		<CallbackMethod>actionCoverClose</CallbackMethod>
+	</Action>
+
+	<Action id="actionCoverStop" deviceFilter="self.shellyCover" uiPath="Advanced">
+		<Name>Stop Cover</Name>
+		<CallbackMethod>actionCoverStop</CallbackMethod>
+	</Action>
+
+	<Action id="actionCoverGoToPosition" deviceFilter="self.shellyCover" uiPath="Advanced">
+		<Name>Go To Position</Name>
+		<CallbackMethod>actionCoverGoToPosition</CallbackMethod>
+		<ConfigUI>
+			<Field id="position" type="textfield" defaultValue="50">
+				<Label>Position (0-100):</Label>
+			</Field>
+			<Field id="hlp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>0 = fully closed, 100 = fully open.</Label>
+			</Field>
+		</ConfigUI>
+	</Action>
+
+	<Action id="actionCoverSetTilt" deviceFilter="self.shellyCover" uiPath="Advanced">
+		<Name>Set Tilt Angle</Name>
+		<CallbackMethod>actionCoverSetTilt</CallbackMethod>
+		<ConfigUI>
+			<Field id="tilt" type="textfield" defaultValue="50">
+				<Label>Tilt (0-100):</Label>
+			</Field>
+			<Field id="hlp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>0 = slats fully closed, 100 = slats fully open. For venetian blinds only.</Label>
+			</Field>
+		</ConfigUI>
+	</Action>
+
+	<!-- ── Dimmer: set brightness ───────────────────────────────── -->
+	<Action id="actionSetBrightness" deviceFilter="self.shellyDimmer" uiPath="Advanced">
+		<Name>Set Brightness</Name>
+		<CallbackMethod>actionSetBrightness</CallbackMethod>
+		<ConfigUI>
+			<Field id="brightness" type="textfield" defaultValue="100">
+				<Label>Brightness (0-100):</Label>
+			</Field>
+		</ConfigUI>
+	</Action>
+
+	<!-- ── RGBW: set color ──────────────────────────────────────── -->
+	<Action id="actionSetColor" deviceFilter="self.shellyRGBW" uiPath="Advanced">
+		<Name>Set RGBW Color</Name>
+		<CallbackMethod>actionSetColor</CallbackMethod>
+		<ConfigUI>
+			<Field id="red" type="textfield" defaultValue="255">
+				<Label>Red (0-255):</Label>
+			</Field>
+			<Field id="green" type="textfield" defaultValue="255">
+				<Label>Green (0-255):</Label>
+			</Field>
+			<Field id="blue" type="textfield" defaultValue="255">
+				<Label>Blue (0-255):</Label>
+			</Field>
+			<Field id="white" type="textfield" defaultValue="0">
+				<Label>White (0-255):</Label>
+			</Field>
+			<Field id="brightness" type="textfield" defaultValue="100">
+				<Label>Brightness (0-100):</Label>
+			</Field>
+		</ConfigUI>
+	</Action>
+
+	<!-- ── RGBW: built-in effects ───────────────────────────────── -->
+	<Action id="actionSetEffect" deviceFilter="self.shellyRGBW" uiPath="Advanced">
+		<Name>Set Light Effect</Name>
+		<CallbackMethod>actionSetEffect</CallbackMethod>
+		<ConfigUI>
+			<Field id="effect" type="menu" defaultValue="0">
+				<Label>Effect:</Label>
+				<List class="self" filter="self" method="getRGBWEffects"/>
+			</Field>
+			<Field id="hlp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Built-in animated effects on the Shelly Plus RGBW PM. Select Static to cancel any running effect.</Label>
+			</Field>
+		</ConfigUI>
+	</Action>
+
+</Actions>
