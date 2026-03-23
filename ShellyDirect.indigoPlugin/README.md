@@ -5,7 +5,7 @@
 **Author:** CliveS & Claude Sonnet 4.6
 **Shelly compatibility:** Gen 2, Gen 3, Gen 4 (RPC HTTP API)
 
-Direct local-network control of Shelly smart home devices from [Indigo](https://www.indigodomo.com/) — no cloud, no MQTT, no middleman. Uses each device's built-in RPC HTTP API over your LAN.
+Direct local-network control of Shelly smart home devices from [Indigo](https://www.indigodomo.com/) — no cloud, no MQTT, no middleman. Uses each device's built-in RPC HTTP API over your LAN. **Not for Shelly Z-Wave (Wave/Qubino), Shelly BLU (Bluetooth), or Shelly Gen 1 devices** — see [Not Supported](#not-supported) below.
 
 ---
 
