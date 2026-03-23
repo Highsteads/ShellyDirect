@@ -24,6 +24,16 @@ Direct local-network control of Shelly smart home devices from [Indigo](https://
 | **Shelly Smoke** | Plus Smoke |
 | **Shelly Flood** | Plus Flood |
 
+## Not Supported
+
+| Device range | Protocol | Reason | Alternative |
+|---|---|---|---|
+| **Shelly Gen 1** (original Shelly 1, 2, RGBW2, Plug S, Bulb etc.) | Wi-Fi, CoAP/REST | Uses a completely different HTTP API — not RPC-compatible | Not currently supported; would require a separate plugin |
+| **Shelly BLU** (BLU Button1, BLU RC Button 4, BLU DoorWindow, BLU Motion, BLU H&T) | Bluetooth Low Energy | No IP address, no HTTP API | Pair to a Gen 2/3 gateway and use BLE-to-webhook bridging (not implemented) |
+| **Shelly Wave / Qubino Wave** (Wave 1, Wave 1PM, Wave 2PM, Wave Shutter, Wave Dimmer, Wave i4 etc.) | Z-Wave | No IP address, no HTTP API | Use Indigo's built-in Z-Wave support — pair directly to your Z-Wave controller |
+
+> **Rule of thumb:** If the device connects to your Wi-Fi network and has a local IP address, it is likely Gen 2 or later and supported. If it connects via Bluetooth or Z-Wave, it is not.
+
 ---
 
 ## Features
