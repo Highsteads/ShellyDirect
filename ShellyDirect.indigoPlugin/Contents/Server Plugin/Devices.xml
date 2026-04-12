@@ -106,16 +106,7 @@
 				<TriggerLabel>Energy This Month (kWh)</TriggerLabel>
 				<ControlPageLabel>Month kWh</ControlPageLabel>
 			</State>
-			<State id="energy_cost_today">
-				<ValueType>Float</ValueType>
-				<TriggerLabel>Energy Cost Today</TriggerLabel>
-				<ControlPageLabel>Cost Today</ControlPageLabel>
-			</State>
-			<State id="energy_cost_month">
-				<ValueType>Float</ValueType>
-				<TriggerLabel>Energy Cost This Month</TriggerLabel>
-				<ControlPageLabel>Cost Month</ControlPageLabel>
-			</State>
+
 			<State id="device_temp_c">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Device Temperature (C)</TriggerLabel>
@@ -606,16 +597,7 @@
 				<TriggerLabel>Energy This Month (kWh)</TriggerLabel>
 				<ControlPageLabel>Month kWh</ControlPageLabel>
 			</State>
-			<State id="energy_cost_today">
-				<ValueType>Float</ValueType>
-				<TriggerLabel>Energy Cost Today</TriggerLabel>
-				<ControlPageLabel>Cost Today</ControlPageLabel>
-			</State>
-			<State id="energy_cost_month">
-				<ValueType>Float</ValueType>
-				<TriggerLabel>Energy Cost This Month</TriggerLabel>
-				<ControlPageLabel>Cost Month</ControlPageLabel>
-			</State>
+
 			<State id="deviceOnline">
 				<ValueType>Boolean</ValueType>
 				<TriggerLabel>Device Online</TriggerLabel>

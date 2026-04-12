@@ -55,11 +55,6 @@ Direct local-network control of Shelly smart home devices from [Indigo](https://
 
 ### Energy Monitoring (PM devices)
 - Real-time watts, daily kWh, monthly kWh
-- Configurable energy rate with flexible currency display:
-  - **Disabled** — kWh states only
-  - **Fixed rate** — enter your rate per kWh
-  - **Indigo variable** — reads a live variable (e.g. `elec_unit_rate_p` from OctopusAccountReader for dynamic Tracker/Agile tariffs)
-  - Currency display: prefix (`$`, `EUR`) or suffix (`p`, `c`) — configurable independently
 - 30-day rolling energy history (exported to CSV via menu)
 
 ### Discovery
@@ -120,25 +115,6 @@ For the Plus 2PM and Pro 4PM, create one Indigo device per channel (select Chann
 
 ---
 
-## Energy Cost Configuration
-
-Open **Plugins → Shelly Direct → Configure** and scroll to **Energy Rate Source**:
-
-| Setting | Use case |
-|---------|----------|
-| Disabled | Track kWh only, no cost calculation |
-| Fixed Rate | Enter a fixed rate (e.g. `24.5` with suffix `p` for UK pence) |
-| Indigo Variable | Point to any variable holding the current rate per kWh |
-
-**Currency display examples:**
-- UK pence: prefix blank, suffix `p` → displays as `12.3p`
-- US dollars: prefix `$`, suffix blank → displays as `$0.12`
-- Euros: prefix `EUR`, suffix blank → displays as `EUR0.28`
-
-**OctopusAccountReader integration:** If you have the OctopusAccountReader plugin installed, set Rate Source to **Indigo Variable** and leave the variable name as `elec_unit_rate_p`. OctopusAccountReader updates this variable daily with the current Octopus Tracker rate, giving you automatic dynamic pricing.
-
----
-
 ## Webhook Port
 
 The plugin uses its own HTTP listener on port **8178**. This avoids Digest Authentication issues with Indigo's built-in IWS server. Make sure port 8178 is not blocked by any firewall between your Shelly devices and the Indigo Mac.
@@ -181,7 +157,7 @@ cd "ShellyDirect.indigoPlugin/Contents/Server Plugin"
 python3 test_plugin.py
 ```
 
-74 tests covering: constants, subnet/IP validation, energy cost calculations, energy baseline arithmetic, trigger filtering, stale webhook detection, variable name sanitisation, and multi-subnet parsing.
+74 tests covering: constants, subnet/IP validation, energy baseline arithmetic, trigger filtering, stale webhook detection, variable name sanitisation, and multi-subnet parsing.
 
 ---
 
@@ -193,6 +169,7 @@ python3 test_plugin.py
 | 2.0 | Mar 2026 | International currency support, Digest Auth, multi-subnet discovery, cover tilt, RGBW effects, power alerts, variable mirroring, firmware notify, trigger events, 30-day energy history, device health summary, CSV export |
 | 2.1 | Mar 2026 | Fixed Actions.xml deviceFilter (dot notation); fixed stale state migration on reload |
 | 2.2 | Mar 2026 | Fixed stale webhook detection (path-only match catches any old device ID); auto-reconfigure webhooks on stale devId; stale deletion logged at INFO level |
+| 2.3 | Apr 2026 | Remove energy cost tracking — kWh only, no rate/currency dependency |
 
 ---
 

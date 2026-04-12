@@ -48,57 +48,6 @@ If set, Digest Auth is used on all RPC calls. All devices must share the same cr
 
 	<Field id="sep3" type="separator"/>
 
-	<!-- ── Energy Cost Tracking ─────────────────────────────────────────── -->
-
-	<Field id="rate_source" type="menu" defaultValue="disabled">
-		<Label>Energy Rate Source:</Label>
-		<List>
-			<Option value="disabled">Disabled (no cost tracking)</Option>
-			<Option value="fixed">Fixed Rate</Option>
-			<Option value="variable">Indigo Variable</Option>
-		</List>
-	</Field>
-	<Field id="hlpRateSource" type="label" fontSize="mini" alignWithControl="true">
-		<Label>How the plugin obtains your electricity unit rate. Disabled = energy kWh states only, no cost calculation.</Label>
-	</Field>
-
-	<Field id="fixed_rate" type="textfield" defaultValue=""
-	       visibleBindingId="rate_source" visibleBindingValue="fixed">
-		<Label>Unit Rate:</Label>
-	</Field>
-	<Field id="hlpFixedRate" type="label" fontSize="mini" alignWithControl="true"
-	       visibleBindingId="rate_source" visibleBindingValue="fixed">
-		<Label>Your rate per kWh in the same unit as your currency display.
-UK pence: enter e.g. 24.5 (set suffix to p below).
-Dollar/Euro users: enter e.g. 0.12 or 0.28 (set prefix to $ or EUR below).</Label>
-	</Field>
-
-	<Field id="rate_variable" type="textfield" defaultValue="elec_unit_rate_p"
-	       visibleBindingId="rate_source" visibleBindingValue="variable">
-		<Label>Rate Variable Name:</Label>
-	</Field>
-	<Field id="hlpRateVar" type="label" fontSize="mini" alignWithControl="true"
-	       visibleBindingId="rate_source" visibleBindingValue="variable">
-		<Label>Name of any Indigo variable holding the current unit rate per kWh.
-OctopusAccountReader users: leave as elec_unit_rate_p (updated daily with Tracker rate).
-Any other plugin, script or schedule can supply this value for dynamic/time-of-use tariffs.</Label>
-	</Field>
-
-	<Field id="currency_prefix" type="textfield" defaultValue=""
-	       visibleBindingId="rate_source" visibleBindingValue="fixed,variable">
-		<Label>Currency Prefix:</Label>
-	</Field>
-	<Field id="currency_suffix" type="textfield" defaultValue="p"
-	       visibleBindingId="rate_source" visibleBindingValue="fixed,variable">
-		<Label>Currency Suffix:</Label>
-	</Field>
-	<Field id="hlpCurrency" type="label" fontSize="mini" alignWithControl="true"
-	       visibleBindingId="rate_source" visibleBindingValue="fixed,variable">
-		<Label>Use prefix OR suffix, not both.
-UK pence: prefix blank, suffix p    |    US/AU dollars: prefix $, suffix blank
-Euros: prefix EUR, suffix blank     |    US cents: prefix blank, suffix c</Label>
-	</Field>
-
 	<Field id="sep4" type="separator"/>
 
 	<!-- ── Firmware Notifications ───────────────────────────────────────── -->

@@ -4,8 +4,8 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Sonnet 4.6
-# Date:        23-03-2026
-# Version:     2.2
+# Date:        12-04-2026
+# Version:     2.3
 
 import csv
 import http.server
@@ -16,6 +16,7 @@ import os
 import platform
 import re
 import socketserver
+import sys as _sys
 import threading
 import time
 import urllib.parse
@@ -24,6 +25,11 @@ from requests.auth import HTTPDigestAuth
 
 import requests
 
+_sys.path.insert(0, os.getcwd())
+try:
+    from plugin_utils import log_startup_banner
+except ImportError:
+    log_startup_banner = None
 
 PLUGIN_ID    = "com.clives.indigoplugin.shellydirect"
 WEBHOOK_PORT = 8178   # Plugin-owned HTTP listener
@@ -118,17 +124,13 @@ class Plugin(indigo.PluginBase):
         self.subnets_raw     = prefs.get("discovery_subnets",       "192.168.4")
         self.subnets         = [s.strip() for s in self.subnets_raw.split(",") if s.strip()]
         self.stale_minutes   = int(prefs.get("stale_minutes",       10))
-        self.rate_source     = prefs.get("rate_source",             "disabled")
-        self.fixed_rate      = prefs.get("fixed_rate",              "")
-        self.rate_var        = prefs.get("rate_variable",           "elec_unit_rate_p")
-        self.currency_prefix = prefs.get("currency_prefix",         "")
-        self.currency_suffix = prefs.get("currency_suffix",         "p")
         self.shelly_user     = prefs.get("shelly_username",         "").strip()
         self.shelly_pass     = prefs.get("shelly_password",         "").strip()
         self.firmware_notify = prefs.get("firmware_notify_enabled", False)
 
         self.last_polled          = {}   # {dev_id: float}
         self.last_seen            = {}   # {dev_id: float}
+        self.fail_count           = {}   # {dev_id: int}  consecutive poll failures
         self.webhook_server       = None
         self.energy_data          = {}   # {str(dev_id): {...baselines + history...}}
         self.last_date            = str(date.today())
@@ -142,25 +144,15 @@ class Plugin(indigo.PluginBase):
         self.indigo_log_handler.setLevel(log_level)
         self._load_energy_data()
 
-        title = " Starting Shelly Direct Plugin "
-        width = 110
-        col   = 28
-        self.logger.info("=" * width)
-        self.logger.info(title.center(width, "="))
-        self.logger.info("=" * width)
-        self.logger.info(f"{'Plugin Name:':<{col}} {display_name}")
-        self.logger.info(f"{'Plugin Version:':<{col}} {version}")
-        self.logger.info(f"{'Plugin ID:':<{col}} {plugin_id}")
-        self.logger.info(f"{'Indigo Version:':<{col}} {indigo.server.version}")
-        self.logger.info(f"{'Indigo API Version:':<{col}} {indigo.server.apiVersion}")
-        self.logger.info(f"{'Architecture:':<{col}} {platform.machine()}")
-        self.logger.info(f"{'Python Version:':<{col}} {platform.python_version()}")
-        self.logger.info(f"{'macOS Version:':<{col}} {platform.mac_ver()[0]}")
-        self.logger.info(f"{'Webhook Port:':<{col}} {WEBHOOK_PORT}")
-        self.logger.info(f"{'Discovery Subnets:':<{col}} {self.subnets_raw}")
-        self.logger.info(f"{'Auth Enabled:':<{col}} {'Yes' if self.shelly_user else 'No'}")
-        self.logger.info(f"{'Firmware Notify:':<{col}} {'Yes' if self.firmware_notify else 'No'}")
-        self.logger.info("=" * width)
+        if log_startup_banner:
+            log_startup_banner(plugin_id, display_name, version, extras=[
+                ("Webhook Port:",      str(WEBHOOK_PORT)),
+                ("Discovery Subnets:", self.subnets_raw),
+                ("Auth Enabled:",      "Yes" if self.shelly_user else "No"),
+                ("Firmware Notify:",   "Yes" if self.firmware_notify else "No"),
+            ])
+        else:
+            indigo.server.log(f"{display_name} v{version} starting")
 
     def startup(self):
         self._start_webhook_server()
@@ -218,11 +210,6 @@ class Plugin(indigo.PluginBase):
                         f"Invalid subnet '{s}'. Use three octets only, e.g. 192.168.4"
                     )
                     break
-        if values_dict.get("rate_source") == "fixed":
-            try:
-                float(values_dict.get("fixed_rate", ""))
-            except (ValueError, TypeError):
-                errors["fixed_rate"] = "Enter a valid number (e.g. 24.5 or 0.28)"
         return (len(errors) == 0), values_dict, errors
 
     def closedPrefsConfigUi(self, values_dict, user_cancelled):
@@ -232,11 +219,6 @@ class Plugin(indigo.PluginBase):
             self.subnets_raw     = values_dict.get("discovery_subnets",       "192.168.4")
             self.subnets         = [s.strip() for s in self.subnets_raw.split(",") if s.strip()]
             self.stale_minutes   = int(values_dict.get("stale_minutes",       10))
-            self.rate_source     = values_dict.get("rate_source",             "disabled")
-            self.fixed_rate      = values_dict.get("fixed_rate",              "")
-            self.rate_var        = values_dict.get("rate_variable",           "elec_unit_rate_p")
-            self.currency_prefix = values_dict.get("currency_prefix",        "")
-            self.currency_suffix = values_dict.get("currency_suffix",        "p")
             self.shelly_user     = values_dict.get("shelly_username",        "").strip()
             self.shelly_pass     = values_dict.get("shelly_password",        "").strip()
             self.firmware_notify = values_dict.get("firmware_notify_enabled", False)
@@ -634,7 +616,7 @@ class Plugin(indigo.PluginBase):
 
             with open(filepath, "w", newline="") as f:
                 writer = csv.writer(f)
-                writer.writerow(["Date", "Device", "kWh", "Cost"])
+                writer.writerow(["Date", "Device", "kWh"])
 
                 for dev_id_str, entry in self.energy_data.items():
                     try:
@@ -644,12 +626,10 @@ class Plugin(indigo.PluginBase):
                         name = f"Device {dev_id_str}"
 
                     for record in entry.get("history", []):
-                        cost_str = str(record.get("cost_ui", "")) or str(round(record.get("cost", 0.0), 4))
                         writer.writerow([
                             record.get("date", ""),
                             name,
                             round(record.get("kwh", 0.0), 4),
-                            cost_str,
                         ])
                         row_count += 1
 
@@ -1086,8 +1066,6 @@ class Plugin(indigo.PluginBase):
                 total_wh = float((data.get("aenergy")     or {}).get("total", 0.0))
 
                 today_kwh, month_kwh        = self._calc_energy(dev.id, total_wh)
-                cost_today, cost_today_ui   = self._calc_cost(today_kwh)
-                cost_month, cost_month_ui   = self._calc_cost(month_kwh)
 
                 kv += [
                     {"key": "power_watts",        "value": watts,
@@ -1102,15 +1080,10 @@ class Plugin(indigo.PluginBase):
                      "uiValue": f"{today_kwh:.3f} kWh"},
                     {"key": "energy_kwh_month",   "value": round(month_kwh, 4),
                      "uiValue": f"{month_kwh:.3f} kWh"},
-                    {"key": "energy_cost_today",  "value": round(cost_today, 4),
-                     "uiValue": cost_today_ui},
-                    {"key": "energy_cost_month",  "value": round(cost_month, 4),
-                     "uiValue": cost_month_ui},
                 ]
                 mirror.update({
                     "watts":     f"{watts:.1f}",
                     "kwh_today": f"{today_kwh:.4f}",
-                    "cost_today": cost_today_ui or str(round(cost_today, 4)),
                 })
                 self._check_power_alert(dev, watts)
 
@@ -1130,9 +1103,9 @@ class Plugin(indigo.PluginBase):
             self.last_polled[dev.id] = time.time()
 
         except requests.exceptions.ConnectionError:
-            self._mark_offline(dev, f"no route to {ip}")
+            self._poll_failed(dev, f"no route to {ip}")
         except requests.exceptions.Timeout:
-            self._mark_offline(dev, f"timed out ({ip})")
+            self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             self.logger.warning(f'[{dev.name}] poll error: {exc}')
 
@@ -1169,9 +1142,9 @@ class Plugin(indigo.PluginBase):
             self.last_polled[dev.id] = time.time()
 
         except requests.exceptions.ConnectionError:
-            self._mark_offline(dev, f"no route to {ip}")
+            self._poll_failed(dev, f"no route to {ip}")
         except requests.exceptions.Timeout:
-            self._mark_offline(dev, f"timed out ({ip})")
+            self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             self.logger.warning(f'[{dev.name}] Uni poll error: {exc}')
 
@@ -1220,9 +1193,9 @@ class Plugin(indigo.PluginBase):
             self.logger.debug(f'[{dev.name}] cover: state={state} pos={cur_pos}%')
 
         except requests.exceptions.ConnectionError:
-            self._mark_offline(dev, f"no route to {ip}")
+            self._poll_failed(dev, f"no route to {ip}")
         except requests.exceptions.Timeout:
-            self._mark_offline(dev, f"timed out ({ip})")
+            self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             self.logger.warning(f'[{dev.name}] cover poll error: {exc}')
 
@@ -1258,9 +1231,9 @@ class Plugin(indigo.PluginBase):
             self.last_polled[dev.id] = time.time()
 
         except requests.exceptions.ConnectionError:
-            self._mark_offline(dev, f"no route to {ip}")
+            self._poll_failed(dev, f"no route to {ip}")
         except requests.exceptions.Timeout:
-            self._mark_offline(dev, f"timed out ({ip})")
+            self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             self.logger.warning(f'[{dev.name}] dimmer poll error: {exc}')
 
@@ -1285,9 +1258,9 @@ class Plugin(indigo.PluginBase):
             self.last_polled[dev.id] = time.time()
 
         except requests.exceptions.ConnectionError:
-            self._mark_offline(dev, f"no route to {ip}")
+            self._poll_failed(dev, f"no route to {ip}")
         except requests.exceptions.Timeout:
-            self._mark_offline(dev, f"timed out ({ip})")
+            self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             self.logger.warning(f'[{dev.name}] i4 poll error: {exc}')
 
@@ -1328,8 +1301,6 @@ class Plugin(indigo.PluginBase):
                 pass
 
             today_kwh, month_kwh       = self._calc_energy(dev.id, total_wh)
-            cost_today, cost_today_ui  = self._calc_cost(today_kwh)
-            cost_month, cost_month_ui  = self._calc_cost(month_kwh)
 
             kv = [
                 {"key": "sensorValue",       "value": round(tot, 1), "uiValue": f"{tot:.1f} W"},
@@ -1346,10 +1317,6 @@ class Plugin(indigo.PluginBase):
                  "uiValue": f"{today_kwh:.3f} kWh"},
                 {"key": "energy_kwh_month",  "value": round(month_kwh, 4),
                  "uiValue": f"{month_kwh:.3f} kWh"},
-                {"key": "energy_cost_today", "value": round(cost_today, 4),
-                 "uiValue": cost_today_ui},
-                {"key": "energy_cost_month", "value": round(cost_month, 4),
-                 "uiValue": cost_month_ui},
             ]
             dev.updateStatesOnServer(kv)
             self._mirror_states(dev, {
@@ -1360,9 +1327,9 @@ class Plugin(indigo.PluginBase):
             self.last_polled[dev.id] = time.time()
 
         except requests.exceptions.ConnectionError:
-            self._mark_offline(dev, f"no route to {ip}")
+            self._poll_failed(dev, f"no route to {ip}")
         except requests.exceptions.Timeout:
-            self._mark_offline(dev, f"timed out ({ip})")
+            self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             self.logger.warning(f'[{dev.name}] EM poll error: {exc}')
 
@@ -1403,9 +1370,9 @@ class Plugin(indigo.PluginBase):
             self.last_polled[dev.id] = time.time()
 
         except requests.exceptions.ConnectionError:
-            self._mark_offline(dev, f"no route to {ip}")
+            self._poll_failed(dev, f"no route to {ip}")
         except requests.exceptions.Timeout:
-            self._mark_offline(dev, f"timed out ({ip})")
+            self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             self.logger.warning(f'[{dev.name}] RGBW poll error: {exc}')
 
@@ -1486,10 +1453,18 @@ class Plugin(indigo.PluginBase):
     # ---------------------------------------------------------------------------
 
     def _mark_online(self, dev):
-        self.last_seen[dev.id] = time.time()
+        self.last_seen[dev.id]  = time.time()
+        self.fail_count[dev.id] = 0          # reset consecutive failure counter
         if not dev.states.get("deviceOnline", True):
             dev.updateStateOnServer("deviceOnline", True)
             self.logger.info(f'[{dev.name}] back online')
+
+    def _poll_failed(self, dev, reason=""):
+        """Increment consecutive failure counter; only mark offline after 2 failures."""
+        count = self.fail_count.get(dev.id, 0) + 1
+        self.fail_count[dev.id] = count
+        if count >= 2:
+            self._mark_offline(dev, reason)
 
     def _mark_offline(self, dev, reason=""):
         if dev.states.get("deviceOnline", True):
@@ -1549,37 +1524,6 @@ class Plugin(indigo.PluginBase):
         month_kwh = max(0.0, (total_wh - entry["month_baseline_wh"]) / 1000.0)
         return today_kwh, month_kwh
 
-    def _calc_cost(self, kwh):
-        """Return (cost_float, ui_string). Returns (0.0, '') when tracking is disabled."""
-        pre = self.currency_prefix
-        suf = self.currency_suffix
-
-        def _format(value):
-            # Minor-unit display (pence/cents, no prefix) -> 1dp; major-unit -> 2dp
-            dp = 1 if (not pre and suf) else 2
-            return f"{pre}{value:.{dp}f}{suf}"
-
-        if self.rate_source == "disabled":
-            return 0.0, ""
-
-        if self.rate_source == "fixed":
-            try:
-                rate = float(self.fixed_rate)
-                cost = kwh * rate
-                return cost, _format(cost)
-            except (ValueError, TypeError):
-                return 0.0, ""
-
-        if self.rate_source == "variable":
-            try:
-                rate = float(indigo.variables[self.rate_var].value)
-                cost = kwh * rate
-                return cost, _format(cost)
-            except Exception:
-                return 0.0, ""
-
-        return 0.0, ""
-
     def _midnight_reset(self, today_str):
         month_str = today_str[:7]
         self.logger.info(f"Date changed to {today_str} - resetting daily energy baselines")
@@ -1610,12 +1554,9 @@ class Plugin(indigo.PluginBase):
                 yesterday_kwh = max(0.0, (total_wh - entry.get("day_baseline_wh", total_wh)) / 1000.0)
                 if "history" not in entry:
                     entry["history"] = []
-                _, cost_ui = self._calc_cost(yesterday_kwh)
                 entry["history"].append({
-                    "date":    entry.get("day_date", ""),
-                    "kwh":     round(yesterday_kwh, 4),
-                    "cost":    round(yesterday_kwh * self._get_current_rate(), 4),
-                    "cost_ui": cost_ui,
+                    "date": entry.get("day_date", ""),
+                    "kwh":  round(yesterday_kwh, 4),
                 })
                 # Keep only the last HISTORY_DAYS entries
                 entry["history"] = entry["history"][-HISTORY_DAYS:]
@@ -1632,17 +1573,6 @@ class Plugin(indigo.PluginBase):
                 self.logger.warning(f'[{dev.name}] Midnight reset failed: {exc}')
 
         self._save_energy_data()
-
-    def _get_current_rate(self):
-        """Return current unit rate as float, or 0.0 if not configured."""
-        try:
-            if self.rate_source == "fixed":
-                return float(self.fixed_rate)
-            if self.rate_source == "variable":
-                return float(indigo.variables[self.rate_var].value)
-        except Exception:
-            pass
-        return 0.0
 
     # ---------------------------------------------------------------------------
     # Variable mirroring  (ShellyDirect variable folder)
@@ -1949,3 +1879,18 @@ class Plugin(indigo.PluginBase):
             )
             for n in created:
                 self.logger.info(f"  [+] {n}")
+
+    # ---------------------------------------------------------------------------
+    # Menu handlers
+    # ---------------------------------------------------------------------------
+
+    def showPluginInfo(self, valuesDict=None, typeId=None):
+        if log_startup_banner:
+            log_startup_banner(self.pluginId, self.pluginDisplayName, self.pluginVersion, extras=[
+                ("Webhook Port:",      str(WEBHOOK_PORT)),
+                ("Discovery Subnets:", self.subnets_raw),
+                ("Auth Enabled:",      "Yes" if self.shelly_user else "No"),
+                ("Firmware Notify:",   "Yes" if self.firmware_notify else "No"),
+            ])
+        else:
+            indigo.server.log(f"{self.pluginDisplayName} v{self.pluginVersion}")
