@@ -3,11 +3,12 @@
 
 	<!-- ── Button Input Pressed ─────────────────────────────────── -->
 	<!--
-	     Fires when any physical button input on a Shelly device is pressed.
+	     Fires when any wired physical button input on a Shelly device is pressed.
 	     Supported press types: single, double, long.
 	     Supported device types: shellyRelay (input 0, channel 0 only),
 	                             shellyUni (inputs 0 and 1),
 	                             shellyI4 (inputs 0-3).
+	     For Bluetooth buttons (BLU Button / BLU RC4) use "BLU Button Pressed" below.
 	-->
 	<Event id="inputButtonPress">
 		<Name>Button Input Pressed</Name>
@@ -49,6 +50,43 @@
 			<Field id="deviceId" type="menu" defaultValue="any">
 				<Label>Device:</Label>
 				<List class="self" filter="self" method="getAllShellyDevices"/>
+			</Field>
+		</ConfigUI>
+	</Event>
+
+	<!-- ── BLU Button Pressed ──────────────────────────────────── -->
+	<!--
+	     Fires when a Shelly BLU Button or BLU RC Button 4 is pressed.
+	     Events arrive via POST webhook from the BLE gateway device.
+	     press_type values: single_push, double_push, triple_push, long_push.
+	     button_idx (1-4): RC4 only — identifies which of the 4 buttons was pressed.
+	-->
+	<Event id="bluButtonPress">
+		<Name>BLU Button Pressed</Name>
+		<ConfigUI>
+			<Field id="deviceId" type="menu" defaultValue="any">
+				<Label>Device:</Label>
+				<List class="self" filter="self" method="getBluDevices"/>
+			</Field>
+			<Field id="pressType" type="menu" defaultValue="any">
+				<Label>Press Type:</Label>
+				<List>
+					<Option value="any">Any press</Option>
+					<Option value="single_push">Single press</Option>
+					<Option value="double_push">Double press</Option>
+					<Option value="triple_push">Triple press</Option>
+					<Option value="long_push">Long press</Option>
+				</List>
+			</Field>
+			<Field id="buttonIdx" type="menu" defaultValue="any">
+				<Label>Button (RC4 only):</Label>
+				<List>
+					<Option value="any">Any button</Option>
+					<Option value="1">Button 1</Option>
+					<Option value="2">Button 2</Option>
+					<Option value="3">Button 3</Option>
+					<Option value="4">Button 4</Option>
+				</List>
 			</Field>
 		</ConfigUI>
 	</Event>

@@ -607,6 +607,122 @@
 	</Device>
 
 	<!-- ============================================================
+	     shellyBluButton  -  Shelly BLU Button 1 (Bluetooth, gateway model)
+	     The button is a BLE peripheral; a Shelly Gen 2/3/4 device acts as
+	     the BLE gateway and fires POST webhooks to this plugin.
+	     ============================================================ -->
+	<Device type="sensor" id="shellyBluButton">
+		<Name>Shelly BLU Button</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>Gateway IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>IP address of the Shelly Gen2/3/4 device acting as the BLE gateway (e.g. 192.168.4.10). NOT the button's own IP — BLU buttons have no IP.</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="bthome_id" type="textfield" defaultValue="200">
+				<Label>BTHome Device ID:</Label>
+			</Field>
+			<Field id="hlpBth" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Numeric BTHomeDevice component ID assigned by the gateway (e.g. 200, 201, 202). Check the gateway's web UI under Components or Scripts.</Label>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="sensorValue">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Button Pressed</TriggerLabel>
+				<ControlPageLabel>Pressed</ControlPageLabel>
+			</State>
+			<State id="lastAction">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Last Action</TriggerLabel>
+				<ControlPageLabel>Last Action</ControlPageLabel>
+			</State>
+			<State id="pressCount">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Press Count</TriggerLabel>
+				<ControlPageLabel>Presses</ControlPageLabel>
+			</State>
+			<State id="battery_pct">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Battery (%)</TriggerLabel>
+				<ControlPageLabel>Battery</ControlPageLabel>
+			</State>
+			<State id="rssi">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>RSSI (dBm)</TriggerLabel>
+				<ControlPageLabel>RSSI</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
+	     shellyBluRC4  -  Shelly BLU RC Button 4 (Bluetooth, gateway model)
+	     4-button remote; idx field in the webhook body identifies button 1-4.
+	     ============================================================ -->
+	<Device type="sensor" id="shellyBluRC4">
+		<Name>Shelly BLU RC Button 4</Name>
+		<ConfigUI>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>Gateway IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>IP address of the Shelly Gen2/3/4 device acting as the BLE gateway (e.g. 192.168.4.10). NOT the button's own IP — BLU devices have no IP.</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="bthome_id" type="textfield" defaultValue="200">
+				<Label>BTHome Device ID:</Label>
+			</Field>
+			<Field id="hlpBth" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Numeric BTHomeDevice component ID assigned by the gateway (e.g. 200, 201, 202). Check the gateway's web UI under Components or Scripts.</Label>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="sensorValue">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Button Pressed</TriggerLabel>
+				<ControlPageLabel>Pressed</ControlPageLabel>
+			</State>
+			<State id="lastAction">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Last Action</TriggerLabel>
+				<ControlPageLabel>Last Action</ControlPageLabel>
+			</State>
+			<State id="lastButton">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Last Button (1-4)</TriggerLabel>
+				<ControlPageLabel>Last Button</ControlPageLabel>
+			</State>
+			<State id="pressCount">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Press Count</TriggerLabel>
+				<ControlPageLabel>Presses</ControlPageLabel>
+			</State>
+			<State id="battery_pct">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Battery (%)</TriggerLabel>
+				<ControlPageLabel>Battery</ControlPageLabel>
+			</State>
+			<State id="rssi">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>RSSI (dBm)</TriggerLabel>
+				<ControlPageLabel>RSSI</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+	<!-- ============================================================
 	     shellyRGBW  -  RGBW LED controller
 	     Covers: Plus RGBW PM
 	     ============================================================ -->

@@ -4,8 +4,8 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Sonnet 4.6
-# Date:        12-04-2026
-# Version:     2.3
+# Date:        24-04-2026
+# Version:     2.5
 
 import csv
 import http.server
@@ -93,6 +93,9 @@ APP_INFO = {
 # Device types that run on battery and cannot be polled on demand
 PUSH_ONLY_TYPES = {"shellyHT", "shellySmoke", "shellyFlood"}
 
+# Bluetooth devices — no IP of their own; reach Indigo via gateway POST webhooks
+BLU_TYPES       = {"shellyBluButton", "shellyBluRC4"}
+
 # Device types that use Light.Set / Light.GetStatus instead of Switch.*
 LIGHT_TYPES     = {"shellyDimmer", "shellyRGBW"}
 
@@ -174,7 +177,9 @@ class Plugin(indigo.PluginBase):
         self.last_polled[dev.id] = 0
         self.last_seen[dev.id]   = time.time()
         dev.updateStateOnServer("deviceOnline", True)
-        self._poll_device(dev)
+        # BLU devices are pure-event Bluetooth peripherals — nothing to poll directly
+        if dev.deviceTypeId not in BLU_TYPES:
+            self._poll_device(dev)
         self._configure_webhooks(dev)
 
     def deviceStopComm(self, dev):
@@ -228,11 +233,21 @@ class Plugin(indigo.PluginBase):
         errors = indigo.Dict()
         ip = values_dict.get("ip_address", "").strip()
         if not ip:
-            errors["ip_address"] = "IP address is required."
+            label = "Gateway IP address is required." if type_id in BLU_TYPES else "IP address is required."
+            errors["ip_address"] = label
         else:
             parts = ip.split(".")
             if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
                 errors["ip_address"] = "Please enter a valid IPv4 address (e.g. 192.168.4.10)."
+        if type_id in BLU_TYPES:
+            bthome_id = values_dict.get("bthome_id", "").strip()
+            if not bthome_id:
+                errors["bthome_id"] = "BTHome Device ID is required (integer, e.g. 200)."
+            else:
+                try:
+                    int(bthome_id)
+                except ValueError:
+                    errors["bthome_id"] = "BTHome Device ID must be an integer (e.g. 200, 201, 202)."
         if type_id == "shellyRelay" and values_dict.get("power_alert_enabled", False):
             try:
                 float(values_dict.get("power_alert_watts", ""))
@@ -505,6 +520,10 @@ class Plugin(indigo.PluginBase):
 
                 for dev in indigo.devices.iter("self"):
                     if not dev.enabled or not dev.configured:
+                        continue
+                    # BLU devices are event-driven via gateway webhooks — no polling or
+                    # stale-check possible (they sleep between button presses)
+                    if dev.deviceTypeId in BLU_TYPES:
                         continue
                     if dev.deviceTypeId in PUSH_ONLY_TYPES:
                         self._check_online(dev, now)
@@ -791,6 +810,67 @@ class Plugin(indigo.PluginBase):
                     except Exception:
                         pass
 
+            def do_POST(self):
+                """Handle BLU button webhook POSTs from the Shelly BLE gateway.
+
+                URL: /shellyBluEvent?devId=<id>
+                Body (JSON): {"component":"bthomedevice:202","id":202,
+                              "event":"single_push","idx":1,"ts":1731931521.19}
+                """
+                try:
+                    parsed  = urllib.parse.urlparse(self.path)
+                    params  = urllib.parse.parse_qs(parsed.query)
+                    dev_id  = int(params.get("devId", ["0"])[0])
+
+                    if not dev_id:
+                        self.send_response(400); self.end_headers(); return
+
+                    length  = int(self.headers.get("Content-Length", 0))
+                    body    = self.rfile.read(length) if length else b"{}"
+                    try:
+                        payload = json.loads(body)
+                    except json.JSONDecodeError:
+                        payload = {}
+
+                    try:
+                        target = indigo.devices[dev_id]
+                    except KeyError:
+                        # Stale devId — try to find device by gateway IP and auto-repair
+                        gw_ip = self.client_address[0]
+                        current_dev = None
+                        for dev in indigo.devices.iter(PLUGIN_ID):
+                            if (dev.deviceTypeId in BLU_TYPES and
+                                    dev.pluginProps.get("ip_address", "").strip() == gw_ip):
+                                current_dev = dev
+                                break
+                        if current_dev:
+                            plugin.logger.info(
+                                f"[blu webhook] Stale devId {dev_id} from gateway {gw_ip} — "
+                                f"auto-reconfiguring for \"{current_dev.name}\""
+                            )
+                            threading.Thread(
+                                target=plugin._configure_webhooks,
+                                args=(current_dev,),
+                                daemon=True,
+                            ).start()
+                        else:
+                            plugin.logger.warning(
+                                f"[blu webhook] Device {dev_id} not found (gateway IP: {gw_ip})"
+                            )
+                        self.send_response(404); self.end_headers(); return
+
+                    plugin._process_blu_event(target, payload)
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+
+                except Exception as exc:
+                    plugin.logger.error(f"[blu webhook] Handler error: {exc}")
+                    try:
+                        self.send_response(500); self.end_headers()
+                    except Exception:
+                        pass
+
             def log_message(self, format, *args):
                 pass
 
@@ -890,6 +970,75 @@ class Plugin(indigo.PluginBase):
             sensor_url = f"{base}&type=flood&flood={{flood}}&tC={{temperature}}&battery={{battery}}"
             self._setup_sensor_webhook(ip, dev, sensor_url, "flood.detected")
 
+        elif type_id in BLU_TYPES:
+            # BLU devices: webhooks registered on the BLE gateway device's IP.
+            # Uses a separate handler path to avoid interfering with the gateway's
+            # own relay/switch webhooks.
+            self._configure_blu_webhooks(ip, dev)
+
+    def _configure_blu_webhooks(self, ip, dev):
+        """Register bthomedevice press-event webhooks on the BLE gateway for this BLU device.
+
+        The gateway fires POST requests to /shellyBluEvent?devId=<id> for each press.
+        We never delete the gateway's own relay webhooks — only manage BLU URLs that
+        contain our own devId marker.
+        """
+        try:
+            bthome_id   = int(dev.pluginProps.get("bthome_id", 0))
+            blu_url     = f"http://{self.server_ip}:{WEBHOOK_PORT}/shellyBluEvent?devId={dev.id}"
+
+            # RC4 supports triple_push; single-button BLU does not
+            if dev.deviceTypeId == "shellyBluRC4":
+                press_events = ["single_push", "double_push", "triple_push", "long_push"]
+            else:
+                press_events  = ["single_push", "double_push", "long_push"]
+
+            resp = self._rget(f"http://{ip}/rpc/Webhook.List")
+            resp.raise_for_status()
+            hooks = resp.json().get("hooks", [])
+
+            # Collect event names already registered for this specific BLU device URL
+            have_events = set()
+            for hook in hooks:
+                for u in hook.get("urls", []):
+                    if f"shellyBluEvent?devId={dev.id}" in u:
+                        have_events.add(hook.get("event", ""))
+
+            # Create any missing press-event webhooks
+            created = 0
+            for event_name in press_events:
+                event_key = f"bthomedevice.{event_name}"
+                if event_key not in have_events:
+                    self._rget(
+                        f"http://{ip}/rpc/Webhook.Create",
+                        params={
+                            "cid":    bthome_id,
+                            "enable": "true",
+                            "event":  event_key,
+                            "urls":   json.dumps([blu_url]),
+                        },
+                    )
+                    self.logger.debug(
+                        f'[{dev.name}] Created {event_key} BLU webhook (cid={bthome_id})'
+                    )
+                    created += 1
+
+            self.logger.info(
+                f'[{dev.name}] BLU webhooks OK on gateway {ip}'
+                + (f' ({created} created)' if created else ' (all present)')
+            )
+
+        except requests.exceptions.ConnectionError:
+            self.logger.warning(
+                f'[{dev.name}] BLU webhook setup failed — no route to gateway {ip}'
+            )
+        except requests.exceptions.Timeout:
+            self.logger.warning(
+                f'[{dev.name}] BLU webhook setup timed out (gateway {ip})'
+            )
+        except Exception as exc:
+            self.logger.warning(f'[{dev.name}] BLU webhook setup failed: {exc}')
+
     def _ensure_webhooks(self, ip, dev, wanted):
         """Create missing webhooks and delete stale ones for this device."""
         try:
@@ -960,6 +1109,22 @@ class Plugin(indigo.PluginBase):
                 continue
             if dev.deviceTypeId in PUSH_ONLY_TYPES:
                 continue
+            # BLU devices: health is checked via the BLU-specific URL pattern below
+            if dev.deviceTypeId in BLU_TYPES:
+                ip = dev.pluginProps.get("ip_address", "").strip()
+                if not ip:
+                    continue
+                try:
+                    resp     = self._rget(f"http://{ip}/rpc/Webhook.List", timeout=3)
+                    hooks    = resp.json().get("hooks", []) if resp.status_code == 200 else []
+                    all_urls = [u for h in hooks for u in h.get("urls", [])]
+                    if not any(f"shellyBluEvent?devId={dev.id}" in u for u in all_urls):
+                        self.logger.info(f'[{dev.name}] BLU webhooks missing - repairing ...')
+                        self._configure_blu_webhooks(ip, dev)
+                        repaired += 1
+                except Exception:
+                    pass
+                continue
             ip = dev.pluginProps.get("ip_address", "").strip()
             if not ip:
                 continue
@@ -981,6 +1146,54 @@ class Plugin(indigo.PluginBase):
             self.logger.info(f"Webhook health check complete: {repaired} device(s) repaired")
         else:
             self.logger.debug("Webhook health check complete: all OK")
+
+    # ---------------------------------------------------------------------------
+    # BLU Bluetooth button event processing
+    # ---------------------------------------------------------------------------
+
+    def _process_blu_event(self, dev, payload):
+        """Update states and fire trigger for a BLU button press.
+
+        payload example (POST body from gateway):
+            {"component":"bthomedevice:202","id":202,
+             "event":"single_push","idx":1,"ts":1731931521.19}
+
+        event  : press type string  (single_push / double_push / triple_push / long_push)
+        idx    : button number 1-4  (RC4 only; BLU Button always 1)
+        battery_pct / rssi: optional — sent periodically by the gateway
+        """
+        event = payload.get("event", "")
+        idx   = int(payload.get("idx", 1))    # button index 1-4 (RC4), 1 (BLU Button)
+
+        self.last_seen[dev.id] = time.time()
+        if not dev.states.get("deviceOnline", True):
+            dev.updateStateOnServer("deviceOnline", True)
+            self.logger.info(f'[{dev.name}] back online (BLU webhook)')
+
+        kv = [
+            {"key": "sensorValue", "value": True},
+            {"key": "lastAction",  "value": event},
+            {"key": "pressCount",  "value": int(dev.states.get("pressCount", 0)) + 1},
+        ]
+        if dev.deviceTypeId == "shellyBluRC4":
+            kv.append({"key": "lastButton", "value": idx})
+
+        bat  = payload.get("battery_pct")
+        rssi = payload.get("rssi")
+        if bat  is not None:
+            kv.append({"key": "battery_pct", "value": int(bat)})
+        if rssi is not None:
+            kv.append({"key": "rssi",        "value": int(rssi)})
+
+        dev.updateStatesOnServer(kv)
+
+        label = f"button {idx} " if dev.deviceTypeId == "shellyBluRC4" else ""
+        self.logger.info(f'[webhook] "{dev.name}" BLU {label}{event}')
+
+        self._fire_trigger("bluButtonPress", dev.id, {
+            "press_type": event,
+            "button_idx": str(idx),
+        })
 
     # ---------------------------------------------------------------------------
     # Firmware daily notification
@@ -1460,10 +1673,10 @@ class Plugin(indigo.PluginBase):
             self.logger.info(f'[{dev.name}] back online')
 
     def _poll_failed(self, dev, reason=""):
-        """Increment consecutive failure counter; only mark offline after 2 failures."""
+        """Increment consecutive failure counter; only mark offline after 3 failures."""
         count = self.fail_count.get(dev.id, 0) + 1
         self.fail_count[dev.id] = count
-        if count >= 2:
+        if count >= 3:
             self._mark_offline(dev, reason)
 
     def _mark_offline(self, dev, reason=""):
@@ -1667,13 +1880,21 @@ class Plugin(indigo.PluginBase):
             t_dev = trigger.pluginProps.get("deviceId", "any")
             if t_dev and t_dev != "any" and str(dev_id) != t_dev:
                 continue
-            # For button press: apply optional input / press-type filters
+            # For wired button press: apply optional input / press-type filters
             if type_id == "inputButtonPress" and event_props:
                 t_input = trigger.pluginProps.get("inputId", "any")
                 t_press = trigger.pluginProps.get("pressType", "any")
                 if t_input != "any" and t_input != str(event_props.get("input_id", "0")):
                     continue
                 if t_press != "any" and t_press != event_props.get("press_type", ""):
+                    continue
+            # For BLU button press: apply optional press-type / button-index filters
+            if type_id == "bluButtonPress" and event_props:
+                t_press = trigger.pluginProps.get("pressType", "any")
+                t_idx   = trigger.pluginProps.get("buttonIdx", "any")
+                if t_press != "any" and t_press != event_props.get("press_type", ""):
+                    continue
+                if t_idx != "any" and t_idx != str(event_props.get("button_idx", "1")):
                     continue
             try:
                 indigo.trigger.execute(trigger)
@@ -1692,6 +1913,14 @@ class Plugin(indigo.PluginBase):
         result = [("any", "Any Device")]
         for dev in sorted(indigo.devices.iter("self"), key=lambda d: d.name):
             if dev.deviceTypeId in INPUT_TYPES:
+                result.append((str(dev.id), dev.name))
+        return result
+
+    def getBluDevices(self, filter="", valuesDict=None, typeId="", targetId=0):
+        """Dynamic list of BLU Bluetooth button devices for Events.xml selectors."""
+        result = [("any", "Any BLU Device")]
+        for dev in sorted(indigo.devices.iter("self"), key=lambda d: d.name):
+            if dev.deviceTypeId in BLU_TYPES:
                 result.append((str(dev.id), dev.name))
         return result
 
