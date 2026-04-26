@@ -4,8 +4,8 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Sonnet 4.6
-# Date:        24-04-2026
-# Version:     2.5
+# Date:        26-04-2026
+# Version:     2.6
 
 import csv
 import http.server
@@ -181,6 +181,13 @@ class Plugin(indigo.PluginBase):
         if dev.deviceTypeId not in BLU_TYPES:
             self._poll_device(dev)
         self._configure_webhooks(dev)
+        # Backfill MAC address for existing devices that pre-date MAC storage.
+        # Guard: only run if mac_address not yet stored, avoiding recursive trigger
+        # from replacePluginPropsOnServer inside _backfill_mac.
+        if not dev.pluginProps.get("mac_address") and dev.deviceTypeId not in BLU_TYPES:
+            threading.Thread(
+                target=self._backfill_mac, args=(dev,), daemon=True
+            ).start()
 
     def deviceStopComm(self, dev):
         self.logger.debug(f"deviceStopComm: {dev.name}")
@@ -254,6 +261,21 @@ class Plugin(indigo.PluginBase):
             except (ValueError, TypeError):
                 errors["power_alert_watts"] = "Enter a valid wattage threshold (e.g. 2000)"
         return (len(errors) == 0), values_dict, errors
+
+    def closedDeviceConfigUi(self, values_dict, user_cancelled, type_id, dev_id):
+        if user_cancelled:
+            return
+        try:
+            dev = indigo.devices[dev_id]
+        except KeyError:
+            return
+        new_ip = values_dict.get("ip_address", "").strip()
+        old_ip = dev.pluginProps.get("ip_address", "").strip()
+        if new_ip and new_ip != old_ip:
+            self.logger.info(f"[{dev.name}] IP changed {old_ip} -> {new_ip}; reconfiguring webhooks")
+            threading.Thread(
+                target=self._configure_webhooks, args=(dev,), daemon=True
+            ).start()
 
     # ---------------------------------------------------------------------------
     # Standard device actions  (relay, uni, cover on/off, dimmer on/off)
@@ -1957,6 +1979,32 @@ class Plugin(indigo.PluginBase):
                 ips.add(ip)
         return ips
 
+    def _existing_device_macs(self):
+        """Return {MAC_UPPER: dev} for all plugin devices that have mac_address stored."""
+        result = {}
+        for dev in indigo.devices.iter("self"):
+            mac = dev.pluginProps.get("mac_address", "").strip().upper()
+            if mac:
+                result[mac] = dev
+        return result
+
+    def _backfill_mac(self, dev):
+        """Fetch and store MAC address for devices created before MAC storage was added."""
+        ip = dev.pluginProps.get("ip_address", "").strip()
+        if not ip:
+            return
+        try:
+            resp = self._rget(f"http://{ip}/rpc/Shelly.GetDeviceInfo", timeout=3)
+            if resp.status_code == 200:
+                mac = resp.json().get("mac", "").strip()
+                if mac:
+                    new_props = dict(dev.pluginProps)
+                    new_props["mac_address"] = mac
+                    dev.replacePluginPropsOnServer(new_props)
+                    self.logger.debug(f"[{dev.name}] MAC backfilled: {mac}")
+        except Exception as exc:
+            self.logger.debug(f"[{dev.name}] MAC backfill failed: {exc}")
+
     def _build_device_name(self, shelly_name, label, ip, suffix=""):
         last_oct = ip.split(".")[-1]
         base     = f"{label} {last_oct}{suffix}"
@@ -2010,11 +2058,12 @@ class Plugin(indigo.PluginBase):
             return None
 
     def _discover_thread(self, subnet):
-        found        = []
-        created      = []
-        skipped      = []
-        existing_ips = self._existing_device_ips()
-        folder_id    = self._get_or_create_device_folder()
+        found         = []
+        created       = []
+        skipped       = []
+        existing_ips  = self._existing_device_ips()
+        existing_macs = self._existing_device_macs()
+        folder_id     = self._get_or_create_device_folder()
 
         for i in range(1, 255):
             ip = f"{subnet}.{i}"
@@ -2038,6 +2087,26 @@ class Plugin(indigo.PluginBase):
 
                 found.append(ip)
 
+                # MAC-based match: device moved to a new IP — update the existing
+                # Indigo device rather than creating a duplicate.
+                mac_upper = mac.upper()
+                if mac_upper and mac_upper in existing_macs:
+                    old_dev = existing_macs[mac_upper]
+                    old_ip  = old_dev.pluginProps.get("ip_address", "")
+                    if old_ip != ip:
+                        new_props = dict(old_dev.pluginProps)
+                        new_props["ip_address"] = ip
+                        old_dev.replacePluginPropsOnServer(new_props)
+                        self.logger.info(
+                            f"[Discovery] {old_dev.name:<30} IP updated {old_ip} -> {ip}"
+                        )
+                    else:
+                        self.logger.info(
+                            f"[Discovery] {ip:<18} gen={gen}  {label:<22} -- already configured (MAC match)"
+                        )
+                    skipped.append(ip)
+                    continue
+
                 if ip in existing_ips:
                     self.logger.info(
                         f"[Discovery] {ip:<18} gen={gen}  {label:<22} -- already configured"
@@ -2051,7 +2120,7 @@ class Plugin(indigo.PluginBase):
                         dev_name = self._build_device_name(name, label + " Cover", ip)
                         new_dev  = self._create_device(
                             ip, "shellyCover", False, dev_name, folder_id,
-                            {"poll_interval": "10"}
+                            {"poll_interval": "10", "mac_address": mac}
                         )
                         if new_dev:
                             created.append(new_dev.name)
@@ -2067,7 +2136,7 @@ class Plugin(indigo.PluginBase):
                         dev_name = self._build_device_name(name, label, ip, suffix)
                         new_dev  = self._create_device(
                             ip, base_type, has_pm, dev_name, folder_id,
-                            {"channel_id": str(ch)}
+                            {"channel_id": str(ch), "mac_address": mac}
                         )
                         if new_dev:
                             created.append(new_dev.name)
@@ -2079,7 +2148,7 @@ class Plugin(indigo.PluginBase):
 
                 # Single device
                 dev_name = self._build_device_name(name, label, ip)
-                extra    = {}
+                extra    = {"mac_address": mac}
                 if base_type == "shellyEM":
                     extra["is_3phase"] = (num_ch == 3)
                 if base_type == "shellyCover":
