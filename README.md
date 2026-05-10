@@ -14,4 +14,4 @@ See [ShellyDirect.indigoPlugin/README.md](ShellyDirect.indigoPlugin/README.md) f
 
 ## Credentials
 
-This plugin does not use `secrets.py`. All configuration (including optional Digest Auth credentials) is entered via **Plugins → Shelly Direct → Configure**.
+This plugin does not use `IndigoSecrets.py`. All configuration (including optional Digest Auth credentials) is entered via **Plugins → Shelly Direct → Configure**.

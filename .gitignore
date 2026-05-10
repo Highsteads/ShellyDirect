@@ -9,6 +9,7 @@ __pycache__/
 
 # Secrets (never commit)
 Contents/Server Plugin/secrets.py
+Contents/Server Plugin/IndigoSecrets.py
 
 # Personal/local files
 CLAUDE.md
