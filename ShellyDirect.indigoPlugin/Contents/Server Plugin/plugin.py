@@ -1704,8 +1704,9 @@ class Plugin(indigo.PluginBase):
     def _mark_offline(self, dev, reason=""):
         if dev.states.get("deviceOnline", True):
             dev.updateStateOnServer("deviceOnline", False)
-            self.logger.warning(f'[{dev.name}] offline - {reason}')
-            self._fire_trigger("deviceWentOffline", dev.id)
+            if not dev.pluginProps.get("suppress_offline_alerts", False):
+                self.logger.warning(f'[{dev.name}] offline - {reason}')
+                self._fire_trigger("deviceWentOffline", dev.id)
 
     def _check_online(self, dev, now):
         last = self.last_seen.get(dev.id, now)
@@ -2091,18 +2092,30 @@ class Plugin(indigo.PluginBase):
                 # Indigo device rather than creating a duplicate.
                 mac_upper = mac.upper()
                 if mac_upper and mac_upper in existing_macs:
-                    old_dev = existing_macs[mac_upper]
-                    old_ip  = old_dev.pluginProps.get("ip_address", "")
+                    old_dev     = existing_macs[mac_upper]
+                    old_ip      = old_dev.pluginProps.get("ip_address", "")
+                    was_offline = not old_dev.states.get("deviceOnline", True)
                     if old_ip != ip:
                         new_props = dict(old_dev.pluginProps)
                         new_props["ip_address"] = ip
                         old_dev.replacePluginPropsOnServer(new_props)
                         self.logger.info(
-                            f"[Discovery] {old_dev.name:<30} IP updated {old_ip} -> {ip}"
+                            f"[Discovery] {old_dev.name:<30} IP updated {old_ip} -> {ip} -- reconfiguring webhooks"
                         )
+                        fresh = indigo.devices[old_dev.id]
+                        threading.Thread(
+                            target=self._configure_webhooks, args=(fresh,), daemon=True
+                        ).start()
+                    elif was_offline:
+                        self.logger.info(
+                            f"[Discovery] {old_dev.name:<30} {ip:<18} -- reachable but offline, repairing webhooks"
+                        )
+                        threading.Thread(
+                            target=self._configure_webhooks, args=(old_dev,), daemon=True
+                        ).start()
                     else:
                         self.logger.info(
-                            f"[Discovery] {ip:<18} gen={gen}  {label:<22} -- already configured (MAC match)"
+                            f"[Discovery] {old_dev.name:<30} {ip:<18} -- already configured"
                         )
                     skipped.append(ip)
                     continue

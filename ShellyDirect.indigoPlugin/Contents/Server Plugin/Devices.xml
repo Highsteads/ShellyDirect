@@ -79,6 +79,13 @@
 					<Option value="120">Every 2 minutes</Option>
 				</List>
 			</Field>
+			<Field id="sep8" type="separator"/>
+			<Field id="suppress_offline_alerts" type="checkbox" defaultValue="false">
+				<Label>Suppress Offline Alerts:</Label>
+			</Field>
+			<Field id="hlpSuppress" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Do not log warnings or fire offline triggers when this device goes offline. Useful for appliance monitors that are intentionally unpowered when not in use.</Label>
+			</Field>
 		</ConfigUI>
 		<States>
 			<State id="power_watts">
