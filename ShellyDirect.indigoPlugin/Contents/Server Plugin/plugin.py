@@ -4,8 +4,27 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Sonnet 4.6
-# Date:        26-04-2026
-# Version:     2.6
+# Date:        10-05-2026
+# Version:     2.7
+#
+# v2.7 (10-05-2026):
+# - Capture every Shelly RPC field as a dynamic Indigo state.  The curated
+#   per-device-type state lists in Devices.xml stay exactly as-is (so existing
+#   triggers and control pages keep working), but anything ELSE that the
+#   Shelly returns from Switch.GetStatus / Light.GetStatus / EM.GetStatus /
+#   Cover.GetStatus / Sys.GetStatus is now imported as a dynamic state on
+#   the matching Indigo device.  This surfaces:
+#     * power factor (pf), frequency (freq)
+#     * total returned/exported energy (total_returned_energy)
+#     * last command source (source: "MQTT", "HTTP", "switch")
+#     * Wi-Fi RSSI, uptime, free RAM/flash, restart_required (diagnostics)
+#     * any future Shelly firmware additions, automatically.
+# - Implementation copies the Z2M v1.7.1 / Ecowitt v2.1.0 pattern: strict
+#   ASCII state-id sanitiser, declare-before-write phase ordering to avoid
+#   one-off "state key not defined" errors on first encounter, and a
+#   getDeviceStateList override that returns a fresh list copy per call.
+# - Plugin version is now read dynamically from Info.plist (self.pluginVersion);
+#   no separate Python constant.
 
 import csv
 import http.server
@@ -101,6 +120,39 @@ LIGHT_TYPES     = {"shellyDimmer", "shellyRGBW"}
 
 # Device types that have physical button inputs
 INPUT_TYPES     = {"shellyRelay", "shellyUni", "shellyI4"}
+
+# Shelly RPC payload keys handled directly by the per-type _poll_* methods.
+# Anything NOT in this set is captured as a dynamic state by
+# _capture_unhandled_fields().  This is a UNION across all device types;
+# each individual poll passes its own subset so its native states aren't
+# duplicated as dynamics.
+_RPC_HANDLED_KEYS = {
+    # Switch / Light common
+    "id", "output", "apower", "voltage", "current", "temperature", "aenergy",
+    "ret_aenergy", "errors",
+    # Light specific
+    "brightness", "rgb", "white", "mode", "transition", "effect",
+    # Cover specific
+    "state", "current_pos", "target_pos", "slat", "pos_control",
+    "last_direction", "move_started_at", "move_timeout",
+    # EM specific
+    "act_power", "aprt_power", "pf", "freq",
+    "a_voltage", "a_current", "a_act_power", "a_aprt_power", "a_pf", "a_freq",
+    "b_voltage", "b_current", "b_act_power", "b_aprt_power", "b_pf", "b_freq",
+    "c_voltage", "c_current", "c_act_power", "c_aprt_power", "c_pf", "c_freq",
+    "n_current", "total_current", "total_act_power", "total_aprt_power",
+    "user_calibrated_phase",
+}
+
+# Indigo-reserved native device-property names.  Never use these as custom
+# state IDs — Indigo silently routes writes to the native slot.  See the
+# Z2M v1.7 + Ecowitt v2.1 work and feedback_indigo_state_visibility.md.
+_RESERVED_STATE_NAMES = {
+    "batteryLevel", "brightnessLevel", "onOffState", "sensorValue",
+    "whiteTemperature", "redLevel", "greenLevel", "blueLevel", "whiteLevel",
+    "coolerIsOn", "heaterIsOn", "hvacOperationMode", "temperatureInput1",
+    "setpointHeat", "setpointCool", "colorMode",
+}
 
 # RGBW built-in effects
 RGBW_EFFECTS = {
@@ -1334,6 +1386,7 @@ class Plugin(indigo.PluginBase):
 
             dev.updateStatesOnServer(kv)
             self._mirror_states(dev, mirror)
+            self._capture_unhandled_fields(dev, data)
             self._mark_online(dev)
             self.last_polled[dev.id] = time.time()
 
@@ -1350,10 +1403,12 @@ class Plugin(indigo.PluginBase):
             return
         kv     = []
         mirror = {}
+        switch_data = {}
         try:
             resp = self._rget(f"http://{ip}/rpc/Switch.GetStatus?id=0")
             resp.raise_for_status()
-            on_state = bool(resp.json().get("output", False))
+            switch_data = resp.json() or {}
+            on_state = bool(switch_data.get("output", False))
             kv.append({"key": "onOffState", "value": on_state})
             mirror["on"] = str(on_state)
 
@@ -1373,6 +1428,10 @@ class Plugin(indigo.PluginBase):
 
             dev.updateStatesOnServer(kv)
             self._mirror_states(dev, mirror)
+            self._capture_unhandled_fields(
+                dev, switch_data,
+                extra_handled={"input0", "input1", "voltage0", "voltage1"},
+            )
             self._mark_online(dev)
             self.last_polled[dev.id] = time.time()
 
@@ -1423,6 +1482,10 @@ class Plugin(indigo.PluginBase):
                 "state":    state,
                 "position": str(cur_pos) if cur_pos >= 0 else "",
             })
+            self._capture_unhandled_fields(
+                dev, data,
+                extra_handled={"obstructed", "current_tilt", "target_tilt"},
+            )
             self._mark_online(dev)
             self.last_polled[dev.id] = time.time()
             self.logger.debug(f'[{dev.name}] cover: state={state} pos={cur_pos}%')
@@ -1462,6 +1525,7 @@ class Plugin(indigo.PluginBase):
 
             dev.updateStatesOnServer(kv)
             self._mirror_states(dev, mirror)
+            self._capture_unhandled_fields(dev, data)
             self._mark_online(dev)
             self.last_polled[dev.id] = time.time()
 
@@ -1528,10 +1592,12 @@ class Plugin(indigo.PluginBase):
                 tot = pa
 
             total_wh = 0.0
+            emdata   = {}
             try:
                 er = self._rget(f"http://{ip}/rpc/EMData.GetStatus?id=0")
                 if er.status_code == 200:
-                    total_wh = float((er.json() or {}).get("total_act_energy", 0.0))
+                    emdata   = er.json() or {}
+                    total_wh = float(emdata.get("total_act_energy", 0.0))
             except Exception:
                 pass
 
@@ -1558,6 +1624,12 @@ class Plugin(indigo.PluginBase):
                 "watts":     f"{tot:.1f}",
                 "kwh_today": f"{today_kwh:.4f}",
             })
+            self._capture_unhandled_fields(dev, data)
+            if emdata:
+                self._capture_unhandled_fields(
+                    dev, emdata,
+                    extra_handled={"total_act_energy"},
+                )
             self._mark_online(dev)
             self.last_polled[dev.id] = time.time()
 
@@ -1601,6 +1673,7 @@ class Plugin(indigo.PluginBase):
             ]
             dev.updateStatesOnServer(kv)
             self._mirror_states(dev, {"on": str(on_state), "brightness": str(brightness)})
+            self._capture_unhandled_fields(dev, data)
             self._mark_online(dev)
             self.last_polled[dev.id] = time.time()
 
@@ -1693,6 +1766,162 @@ class Plugin(indigo.PluginBase):
         if not dev.states.get("deviceOnline", True):
             dev.updateStateOnServer("deviceOnline", True)
             self.logger.info(f'[{dev.name}] back online')
+
+    # ---------------------------------------------------------------------------
+    # Dynamic-state capture (Z2M v1.7.1 / Ecowitt v2.1 pattern)
+    # ---------------------------------------------------------------------------
+
+    def _is_valid_state_id(self, key):
+        """Indigo XML state IDs must start with an ASCII letter and contain only
+        ASCII letters and digits.  Underscores are NOT permitted despite XML
+        allowing them — Indigo's serialiser rejects with LowLevelBadParameterError.
+        """
+        if not key or not key[0].isascii() or not key[0].isalpha():
+            return False
+        return all(c.isascii() and c.isalnum() for c in key)
+
+    def _sanitise_state_key(self, key):
+        """Convert an RPC field name (snake_case, possibly mixed) into an
+        Indigo-safe camelCase ASCII state ID.  See _is_valid_state_id().
+        """
+        if not key:
+            return ""
+        parts, cur = [], []
+        for c in key:
+            if c.isascii() and c.isalnum():
+                cur.append(c)
+            else:
+                if cur:
+                    parts.append("".join(cur))
+                    cur = []
+        if cur:
+            parts.append("".join(cur))
+        if not parts:
+            return ""
+        sk = parts[0][0].lower() + parts[0][1:] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+        if not sk[0].isalpha():
+            sk = "shelly" + sk[:1].upper() + sk[1:]
+        if sk in _RESERVED_STATE_NAMES:
+            sk = "shelly" + sk[:1].upper() + sk[1:]
+        return sk
+
+    def _capture_unhandled_fields(self, dev, raw_data, extra_handled=None):
+        """Persist any RPC payload field not already written by the type-specific
+        poll method as a dynamic Indigo state.  Three-phase ordering avoids
+        first-encounter "state key not defined" errors:
+
+          1. Identify pending writes + new keys (no I/O)
+          2. If new keys, persist seenDynamicKeys + stateListOrDisplay first
+          3. Then write all values
+
+        `extra_handled` is a per-poll-method set of keys that the curated path
+        already consumed (so we don't duplicate them).  Falsy / None values and
+        complex containers (dicts, lists) are skipped at the leaf level — but
+        nested numeric/string fields inside dicts (e.g. wifi.rssi) are flattened
+        into camelCase keys (wifiRssi).
+        """
+        if not isinstance(raw_data, dict):
+            return
+        handled = set(_RPC_HANDLED_KEYS)
+        if extra_handled:
+            handled |= set(extra_handled)
+
+        # Flatten one level deep for nested objects (Sys.GetStatus.wifi.rssi etc.)
+        def _flatten(prefix, obj):
+            for k, v in obj.items():
+                if k in handled:
+                    continue
+                key = f"{prefix}_{k}" if prefix else k
+                if isinstance(v, dict):
+                    yield from _flatten(key, v)
+                elif isinstance(v, list):
+                    continue   # arrays not stateable
+                elif v is None or v == "":
+                    continue
+                else:
+                    yield key, v
+
+        seen_csv = dev.pluginProps.get("seenDynamicKeys", "")
+        seen = set(s for s in seen_csv.split(",") if s and self._is_valid_state_id(s))
+        pending = []
+        new_keys = []
+
+        for raw_key, raw_val in _flatten("", raw_data):
+            state_key = self._sanitise_state_key(raw_key)
+            if not state_key or not self._is_valid_state_id(state_key):
+                continue
+            if isinstance(raw_val, bool):
+                state_val = bool(raw_val)
+            elif isinstance(raw_val, (int, float)):
+                state_val = float(raw_val) if isinstance(raw_val, float) else int(raw_val)
+            else:
+                state_val = str(raw_val)[:512]
+            pending.append((state_key, state_val))
+            if state_key not in seen:
+                seen.add(state_key)
+                new_keys.append(state_key)
+
+        if new_keys:
+            try:
+                new_props = dict(dev.pluginProps)
+                new_props["seenDynamicKeys"] = ",".join(sorted(seen))
+                dev.replacePluginPropsOnServer(new_props)
+                indigo.devices[dev.id].stateListOrDisplayStateIdChanged()
+                self.logger.info(f'[{dev.name}] imported {len(new_keys)} new field(s): {new_keys}')
+            except Exception as e:
+                self.logger.error(f'[{dev.name}] dynamic-state refresh failed; rolling back. err={e}; new_keys={new_keys}')
+                try:
+                    rollback = dict(dev.pluginProps)
+                    rollback["seenDynamicKeys"] = seen_csv
+                    dev.replacePluginPropsOnServer(rollback)
+                except Exception:
+                    pass
+                return
+
+        for state_key, state_val in pending:
+            try:
+                dev.updateStateOnServer(state_key, state_val)
+            except Exception as e:
+                if self.debug:
+                    self.logger.warning(f'[{dev.name}] dynamic state {state_key!r} write failed: {e}')
+
+    def getDeviceStateList(self, dev):
+        """Override to advertise dynamic states alongside the static Devices.xml ones.
+        IMPORTANT: parent returns a LIVE reference to the parser's cache —
+        always work on a list() copy to avoid permanent corruption.
+        """
+        original = indigo.PluginBase.getDeviceStateList(self, dev)
+        if original is None:
+            return original
+        state_list = list(original)
+        seen_csv = dev.pluginProps.get("seenDynamicKeys", "")
+        if not seen_csv:
+            return state_list
+        existing = set()
+        try:
+            for s in state_list:
+                k = s.get("Key") if hasattr(s, "get") else s["Key"]
+                if k:
+                    existing.add(k)
+        except Exception:
+            existing = set()
+        for key in seen_csv.split(","):
+            key = key.strip()
+            if not key or key in existing or not self._is_valid_state_id(key):
+                continue
+            label = key[:1].upper() + key[1:]
+            current = dev.states.get(key) if hasattr(dev, "states") else None
+            try:
+                if isinstance(current, bool):
+                    state_list.append(self.getDeviceStateDictForBoolTrueFalseType(key, label, label))
+                elif isinstance(current, (int, float)):
+                    state_list.append(self.getDeviceStateDictForNumberType(key, label, label))
+                else:
+                    state_list.append(self.getDeviceStateDictForStringType(key, label, label))
+                existing.add(key)
+            except Exception:
+                continue
+        return state_list
 
     def _poll_failed(self, dev, reason=""):
         """Increment consecutive failure counter; only mark offline after 3 failures."""
