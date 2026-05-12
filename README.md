@@ -12,6 +12,29 @@ See [ShellyDirect.indigoPlugin/README.md](ShellyDirect.indigoPlugin/README.md) f
 2. Unzip the downloaded file — you will get `ShellyDirect.indigoPlugin`
 3. Double-click `ShellyDirect.indigoPlugin` — Indigo will install it automatically
 
-## Credentials
+## Credentials — `IndigoSecrets.py` vs `IndigoSecrets_example.py`
 
-This plugin does not use `IndigoSecrets.py`. All configuration (including optional Digest Auth credentials) is entered via **Plugins → Shelly Direct → Configure**.
+This plugin (along with all CliveS Indigo plugins) reads sensitive values from
+a shared master credentials file at:
+
+`/Library/Application Support/Perceptive Automation/IndigoSecrets.py`
+
+| File | Purpose | Real data? | Committed to GitHub? |
+|------|---------|------------|----------------------|
+| `IndigoSecrets.py` | Working file the plugin reads at runtime. Keep a backup in a password manager. | YES | **NO** — listed in `.gitignore` |
+| `IndigoSecrets_example.py` | Template only — empty placeholders. Shipped in the plugin bundle. | NO | YES |
+
+If you do not have `IndigoSecrets.py`, copy `IndigoSecrets_example.py` from
+the plugin bundle to that location and fill in your values. Or skip
+`IndigoSecrets.py` entirely and enter values via the plugin's configuration
+dialog — `IndigoSecrets.py` wins over the dialog when both are set.
+
+If a required value is set in NEITHER source the plugin logs an ERROR
+pointing the user to either fill in the matching field or add the key to
+`IndigoSecrets.py`.
+
+**Note for this plugin specifically**: Shelly Direct talks to devices on the
+local network with no cloud auth — the only credentials it might use are
+optional Digest Auth username/password for Shelly devices that have a
+password set. These can be entered via **Plugins → Shelly Direct →
+Configure** or added to `IndigoSecrets.py` if you prefer.
