@@ -1,11 +1,11 @@
 <?xml version="1.0"?>
 <PluginConfig>
 
-	<Field id="indigo_server_ip" type="textfield" defaultValue="192.168.100.160">
+	<Field id="indigo_server_ip" type="textfield" defaultValue="">
 		<Label>Indigo Server IP:</Label>
 	</Field>
 	<Field id="hlpServerIp" type="label" fontSize="mini" alignWithControl="true">
-		<Label>IP address Shelly devices use to reach Indigo for webhook callbacks.</Label>
+		<Label>IP address Shelly devices use to reach Indigo for webhook callbacks. Read from IndigoSecrets.INDIGO_SERVER_IP first; this field is a fallback.</Label>
 	</Field>
 
 	<Field id="sep0" type="separator"/>

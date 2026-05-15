@@ -41,7 +41,7 @@
 				<Label>Has Temperature Add-on:</Label>
 			</Field>
 			<Field id="hlpAddon" type="label" fontSize="mini" alignWithControl="true">
-				<Label>Enable if a Shelly Plus Add-on with DS18B20 probe is fitted. Reads probe 0 into addon_temp_c state.</Label>
+				<Label>Enable if a Shelly Plus Add-on with DS18B20 probe is fitted. Reads probe 0 into addonTempC state.</Label>
 			</Field>
 			<Field id="sep4" type="separator"/>
 			<Field id="lock_off" type="checkbox" defaultValue="false">
@@ -88,7 +88,7 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="power_watts">
+			<State id="powerWatts">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Power (W)</TriggerLabel>
 				<ControlPageLabel>Power</ControlPageLabel>
@@ -98,28 +98,28 @@
 				<TriggerLabel>Voltage (V)</TriggerLabel>
 				<ControlPageLabel>Voltage</ControlPageLabel>
 			</State>
-			<State id="current_amps">
+			<State id="currentAmps">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Current (A)</TriggerLabel>
 				<ControlPageLabel>Current</ControlPageLabel>
 			</State>
-			<State id="energy_kwh_today">
+			<State id="energyKwhToday">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Energy Today (kWh)</TriggerLabel>
 				<ControlPageLabel>Today kWh</ControlPageLabel>
 			</State>
-			<State id="energy_kwh_month">
+			<State id="energyKwhMonth">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Energy This Month (kWh)</TriggerLabel>
 				<ControlPageLabel>Month kWh</ControlPageLabel>
 			</State>
 
-			<State id="device_temp_c">
+			<State id="deviceTempC">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Device Temperature (C)</TriggerLabel>
 				<ControlPageLabel>Dev Temp</ControlPageLabel>
 			</State>
-			<State id="addon_temp_c">
+			<State id="addonTempC">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Add-on Probe Temperature (C)</TriggerLabel>
 				<ControlPageLabel>Probe Temp</ControlPageLabel>
@@ -312,7 +312,7 @@
 				<TriggerLabel>Brightness (0-100)</TriggerLabel>
 				<ControlPageLabel>Brightness</ControlPageLabel>
 			</State>
-			<State id="power_watts">
+			<State id="powerWatts">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Power (W)</TriggerLabel>
 				<ControlPageLabel>Power</ControlPageLabel>
@@ -357,7 +357,7 @@
 				<TriggerLabel>Humidity (%)</TriggerLabel>
 				<ControlPageLabel>Humidity</ControlPageLabel>
 			</State>
-			<State id="battery_pct">
+			<State id="batteryPct">
 				<ValueType>Integer</ValueType>
 				<TriggerLabel>Battery (%)</TriggerLabel>
 				<ControlPageLabel>Battery</ControlPageLabel>
@@ -452,7 +452,7 @@
 				<TriggerLabel>Smoke Alarm</TriggerLabel>
 				<ControlPageLabel>Smoke</ControlPageLabel>
 			</State>
-			<State id="battery_pct">
+			<State id="batteryPct">
 				<ValueType>Integer</ValueType>
 				<TriggerLabel>Battery (%)</TriggerLabel>
 				<ControlPageLabel>Battery</ControlPageLabel>
@@ -493,7 +493,7 @@
 				<TriggerLabel>Temperature (C)</TriggerLabel>
 				<ControlPageLabel>Temperature</ControlPageLabel>
 			</State>
-			<State id="battery_pct">
+			<State id="batteryPct">
 				<ValueType>Integer</ValueType>
 				<TriggerLabel>Battery (%)</TriggerLabel>
 				<ControlPageLabel>Battery</ControlPageLabel>
@@ -549,57 +549,57 @@
 				<TriggerLabel>Total Active Power (W)</TriggerLabel>
 				<ControlPageLabel>Total Power</ControlPageLabel>
 			</State>
-			<State id="voltage_a">
+			<State id="voltageA">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Voltage Phase A (V)</TriggerLabel>
 				<ControlPageLabel>V Phase A</ControlPageLabel>
 			</State>
-			<State id="current_a">
+			<State id="currentA">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Current Phase A (A)</TriggerLabel>
 				<ControlPageLabel>I Phase A</ControlPageLabel>
 			</State>
-			<State id="power_a">
+			<State id="powerA">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Active Power Phase A (W)</TriggerLabel>
 				<ControlPageLabel>P Phase A</ControlPageLabel>
 			</State>
-			<State id="voltage_b">
+			<State id="voltageB">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Voltage Phase B (V)</TriggerLabel>
 				<ControlPageLabel>V Phase B</ControlPageLabel>
 			</State>
-			<State id="current_b">
+			<State id="currentB">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Current Phase B (A)</TriggerLabel>
 				<ControlPageLabel>I Phase B</ControlPageLabel>
 			</State>
-			<State id="power_b">
+			<State id="powerB">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Active Power Phase B (W)</TriggerLabel>
 				<ControlPageLabel>P Phase B</ControlPageLabel>
 			</State>
-			<State id="voltage_c">
+			<State id="voltageC">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Voltage Phase C (V)</TriggerLabel>
 				<ControlPageLabel>V Phase C</ControlPageLabel>
 			</State>
-			<State id="current_c">
+			<State id="currentC">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Current Phase C (A)</TriggerLabel>
 				<ControlPageLabel>I Phase C</ControlPageLabel>
 			</State>
-			<State id="power_c">
+			<State id="powerC">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Active Power Phase C (W)</TriggerLabel>
 				<ControlPageLabel>P Phase C</ControlPageLabel>
 			</State>
-			<State id="energy_kwh_today">
+			<State id="energyKwhToday">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Energy Today (kWh)</TriggerLabel>
 				<ControlPageLabel>Today kWh</ControlPageLabel>
 			</State>
-			<State id="energy_kwh_month">
+			<State id="energyKwhMonth">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Energy This Month (kWh)</TriggerLabel>
 				<ControlPageLabel>Month kWh</ControlPageLabel>
@@ -651,7 +651,7 @@
 				<TriggerLabel>Press Count</TriggerLabel>
 				<ControlPageLabel>Presses</ControlPageLabel>
 			</State>
-			<State id="battery_pct">
+			<State id="batteryPct">
 				<ValueType>Integer</ValueType>
 				<TriggerLabel>Battery (%)</TriggerLabel>
 				<ControlPageLabel>Battery</ControlPageLabel>
@@ -711,7 +711,7 @@
 				<TriggerLabel>Press Count</TriggerLabel>
 				<ControlPageLabel>Presses</ControlPageLabel>
 			</State>
-			<State id="battery_pct">
+			<State id="batteryPct">
 				<ValueType>Integer</ValueType>
 				<TriggerLabel>Battery (%)</TriggerLabel>
 				<ControlPageLabel>Battery</ControlPageLabel>
@@ -790,7 +790,7 @@
 				<TriggerLabel>Color Mode</TriggerLabel>
 				<ControlPageLabel>Mode</ControlPageLabel>
 			</State>
-			<State id="power_watts">
+			<State id="powerWatts">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Power (W)</TriggerLabel>
 				<ControlPageLabel>Power</ControlPageLabel>

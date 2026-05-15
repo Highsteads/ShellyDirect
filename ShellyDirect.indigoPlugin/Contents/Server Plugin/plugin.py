@@ -4,8 +4,29 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Sonnet 4.6
-# Date:        10-05-2026
-# Version:     2.7
+# Date:        15-05-2026
+# Version:     3.1
+#
+# v3.1 (15-05-2026):
+# - Demoted webhook switch/light echo log lines to debug to avoid duplicate
+#   log entries (the action handler's `sent "name" on/off` line is the single
+#   info-level record per device action). External physical toggles still
+#   update device state; enable debug logging to see the webhook echo.
+#
+# v3.0 (13-05-2026) — BREAKING:
+# - State IDs renamed from snake_case to camelCase across Devices.xml and
+#   plugin.py (16 IDs total): power_watts -> powerWatts, current_amps ->
+#   currentAmps, energy_kwh_today/month -> energyKwhToday/Month, device_temp_c
+#   -> deviceTempC, addon_temp_c -> addonTempC, battery_pct -> batteryPct,
+#   voltage_a/b/c -> voltageA/B/C, current_a/b/c -> currentA/B/C, power_a/b/c
+#   -> powerA/B/C. Indigo state IDs must be camelCase ASCII (the underscore
+#   form worked statically but violated CLAUDE.md naming rule and would have
+#   blown up if these states were ever declared dynamically). EXISTING
+#   TRIGGERS AND CONTROL PAGES REFERENCING THE OLD STATE NAMES WILL NEED TO
+#   BE UPDATED. State history on existing Indigo devices is lost.
+# - Indigo server IP moved to IndigoSecrets.INDIGO_SERVER_IP with PluginConfig
+#   fallback. Hardcoded "192.168.100.160" removed from plugin.py (2 places)
+#   and PluginConfig.xml defaultValue. ERROR-log if neither source resolves.
 #
 # v2.7 (10-05-2026):
 # - Capture every Shelly RPC field as a dynamic Indigo state.  The curated
@@ -49,6 +70,12 @@ try:
     from plugin_utils import log_startup_banner
 except ImportError:
     log_startup_banner = None
+
+_sys.path.insert(0, "/Library/Application Support/Perceptive Automation")
+try:
+    from IndigoSecrets import INDIGO_SERVER_IP as _SECRETS_INDIGO_IP
+except ImportError:
+    _SECRETS_INDIGO_IP = ""
 
 PLUGIN_ID    = "com.clives.indigoplugin.shellydirect"
 WEBHOOK_PORT = 8178   # Plugin-owned HTTP listener
@@ -175,7 +202,12 @@ class Plugin(indigo.PluginBase):
         super().__init__(plugin_id, display_name, version, prefs)
 
         self.timeout         = int(prefs.get("timeout_secs",        3))
-        self.server_ip       = prefs.get("indigo_server_ip",        "192.168.100.160")
+        self.server_ip       = _SECRETS_INDIGO_IP or prefs.get("indigo_server_ip", "")
+        if not self.server_ip:
+            self.logger.error(
+                "No Indigo server IP configured. Set INDIGO_SERVER_IP in IndigoSecrets.py "
+                "OR fill Indigo Server IP in Plugins -> ShellyDirect -> Configure."
+            )
         self.subnets_raw     = prefs.get("discovery_subnets",       "192.168.4")
         self.subnets         = [s.strip() for s in self.subnets_raw.split(",") if s.strip()]
         self.stale_minutes   = int(prefs.get("stale_minutes",       10))
@@ -279,7 +311,7 @@ class Plugin(indigo.PluginBase):
     def closedPrefsConfigUi(self, values_dict, user_cancelled):
         if not user_cancelled:
             self.timeout         = int(values_dict.get("timeout_secs",        3))
-            self.server_ip       = values_dict.get("indigo_server_ip",        "192.168.100.160")
+            self.server_ip       = _SECRETS_INDIGO_IP or values_dict.get("indigo_server_ip", "")
             self.subnets_raw     = values_dict.get("discovery_subnets",       "192.168.4")
             self.subnets         = [s.strip() for s in self.subnets_raw.split(",") if s.strip()]
             self.stale_minutes   = int(values_dict.get("stale_minutes",       10))
@@ -788,7 +820,7 @@ class Plugin(indigo.PluginBase):
                         on_state = (state == "on")
                         target.updateStateOnServer("onOffState", on_state)
                         plugin.last_polled[dev_id] = time.time()
-                        plugin.logger.info(f'[webhook] "{target.name}" switch -> {state}')
+                        plugin.logger.debug(f'[webhook] "{target.name}" switch -> {state}')
 
                     elif ev_type == "button":
                         # Single, double or long press from any input
@@ -818,7 +850,7 @@ class Plugin(indigo.PluginBase):
                         on_state = (state == "on")
                         target.updateStateOnServer("onOffState", on_state)
                         plugin.last_polled[dev_id] = time.time()
-                        plugin.logger.info(f'[webhook] "{target.name}" light -> {state}')
+                        plugin.logger.debug(f'[webhook] "{target.name}" light -> {state}')
 
                     elif ev_type == "ht":
                         temp = params.get("tC",       [""])[0]
@@ -832,7 +864,7 @@ class Plugin(indigo.PluginBase):
                             kv.append({"key": "humidity", "value": float(hum),
                                        "uiValue": f"{float(hum):.1f} %"})
                         if bat:
-                            kv.append({"key": "battery_pct", "value": int(float(bat)),
+                            kv.append({"key": "batteryPct", "value": int(float(bat)),
                                        "uiValue": f"{int(float(bat))}%"})
                         if kv:
                             target.updateStatesOnServer(kv)
@@ -850,7 +882,7 @@ class Plugin(indigo.PluginBase):
                         bat   = params.get("battery", [""])[0]
                         kv    = [{"key": "sensorValue", "value": alarm}]
                         if bat:
-                            kv.append({"key": "battery_pct", "value": int(float(bat))})
+                            kv.append({"key": "batteryPct", "value": int(float(bat))})
                         target.updateStatesOnServer(kv)
                         plugin._mirror_states(target, {"alarm": str(alarm)})
                         plugin.logger.info(
@@ -866,7 +898,7 @@ class Plugin(indigo.PluginBase):
                             kv.append({"key": "temperature", "value": float(temp),
                                        "uiValue": f"{float(temp):.1f} C"})
                         if bat:
-                            kv.append({"key": "battery_pct", "value": int(float(bat))})
+                            kv.append({"key": "batteryPct", "value": int(float(bat))})
                         target.updateStatesOnServer(kv)
                         plugin._mirror_states(target, {"flood": str(flood)})
                         plugin.logger.info(
@@ -1234,7 +1266,7 @@ class Plugin(indigo.PluginBase):
 
         event  : press type string  (single_push / double_push / triple_push / long_push)
         idx    : button number 1-4  (RC4 only; BLU Button always 1)
-        battery_pct / rssi: optional — sent periodically by the gateway
+        batteryPct / rssi: optional — sent periodically by the gateway
         """
         event = payload.get("event", "")
         idx   = int(payload.get("idx", 1))    # button index 1-4 (RC4), 1 (BLU Button)
@@ -1252,10 +1284,10 @@ class Plugin(indigo.PluginBase):
         if dev.deviceTypeId == "shellyBluRC4":
             kv.append({"key": "lastButton", "value": idx})
 
-        bat  = payload.get("battery_pct")
+        bat  = payload.get("batteryPct")
         rssi = payload.get("rssi")
         if bat  is not None:
-            kv.append({"key": "battery_pct", "value": int(bat)})
+            kv.append({"key": "batteryPct", "value": int(bat)})
         if rssi is not None:
             kv.append({"key": "rssi",        "value": int(rssi)})
 
@@ -1355,17 +1387,17 @@ class Plugin(indigo.PluginBase):
                 today_kwh, month_kwh        = self._calc_energy(dev.id, total_wh)
 
                 kv += [
-                    {"key": "power_watts",        "value": watts,
+                    {"key": "powerWatts",        "value": watts,
                      "uiValue": f"{watts:.1f} W"},
                     {"key": "voltage",            "value": voltage,
                      "uiValue": f"{voltage:.1f} V"},
-                    {"key": "current_amps",       "value": current,
+                    {"key": "currentAmps",       "value": current,
                      "uiValue": f"{current:.3f} A"},
-                    {"key": "device_temp_c",      "value": temp_c,
+                    {"key": "deviceTempC",      "value": temp_c,
                      "uiValue": f"{temp_c:.1f} C"},
-                    {"key": "energy_kwh_today",   "value": round(today_kwh, 4),
+                    {"key": "energyKwhToday",   "value": round(today_kwh, 4),
                      "uiValue": f"{today_kwh:.3f} kWh"},
-                    {"key": "energy_kwh_month",   "value": round(month_kwh, 4),
+                    {"key": "energyKwhMonth",   "value": round(month_kwh, 4),
                      "uiValue": f"{month_kwh:.3f} kWh"},
                 ]
                 mirror.update({
@@ -1379,7 +1411,7 @@ class Plugin(indigo.PluginBase):
                     tr = self._rget(f"http://{ip}/rpc/Temperature.GetStatus?id=100")
                     if tr.status_code == 200:
                         probe_c = float((tr.json() or {}).get("tC", 0.0))
-                        kv.append({"key": "addon_temp_c", "value": probe_c,
+                        kv.append({"key": "addonTempC", "value": probe_c,
                                    "uiValue": f"{probe_c:.1f} C"})
                 except Exception:
                     pass
@@ -1519,7 +1551,7 @@ class Plugin(indigo.PluginBase):
 
             if has_pm:
                 watts = float(data.get("apower", 0.0))
-                kv.append({"key": "power_watts", "value": watts,
+                kv.append({"key": "powerWatts", "value": watts,
                            "uiValue": f"{watts:.1f} W"})
                 mirror["watts"] = f"{watts:.1f}"
 
@@ -1605,18 +1637,18 @@ class Plugin(indigo.PluginBase):
 
             kv = [
                 {"key": "sensorValue",       "value": round(tot, 1), "uiValue": f"{tot:.1f} W"},
-                {"key": "voltage_a",         "value": va,  "uiValue": f"{va:.1f} V"},
-                {"key": "current_a",         "value": ia,  "uiValue": f"{ia:.3f} A"},
-                {"key": "power_a",           "value": pa,  "uiValue": f"{pa:.1f} W"},
-                {"key": "voltage_b",         "value": vb,  "uiValue": f"{vb:.1f} V"},
-                {"key": "current_b",         "value": ib,  "uiValue": f"{ib:.3f} A"},
-                {"key": "power_b",           "value": pb,  "uiValue": f"{pb:.1f} W"},
-                {"key": "voltage_c",         "value": vc,  "uiValue": f"{vc:.1f} V"},
-                {"key": "current_c",         "value": ic,  "uiValue": f"{ic:.3f} A"},
-                {"key": "power_c",           "value": pc,  "uiValue": f"{pc:.1f} W"},
-                {"key": "energy_kwh_today",  "value": round(today_kwh, 4),
+                {"key": "voltageA",         "value": va,  "uiValue": f"{va:.1f} V"},
+                {"key": "currentA",         "value": ia,  "uiValue": f"{ia:.3f} A"},
+                {"key": "powerA",           "value": pa,  "uiValue": f"{pa:.1f} W"},
+                {"key": "voltageB",         "value": vb,  "uiValue": f"{vb:.1f} V"},
+                {"key": "currentB",         "value": ib,  "uiValue": f"{ib:.3f} A"},
+                {"key": "powerB",           "value": pb,  "uiValue": f"{pb:.1f} W"},
+                {"key": "voltageC",         "value": vc,  "uiValue": f"{vc:.1f} V"},
+                {"key": "currentC",         "value": ic,  "uiValue": f"{ic:.3f} A"},
+                {"key": "powerC",           "value": pc,  "uiValue": f"{pc:.1f} W"},
+                {"key": "energyKwhToday",  "value": round(today_kwh, 4),
                  "uiValue": f"{today_kwh:.3f} kWh"},
-                {"key": "energy_kwh_month",  "value": round(month_kwh, 4),
+                {"key": "energyKwhMonth",  "value": round(month_kwh, 4),
                  "uiValue": f"{month_kwh:.3f} kWh"},
             ]
             dev.updateStatesOnServer(kv)
@@ -1668,7 +1700,7 @@ class Plugin(indigo.PluginBase):
                 {"key": "greenLevel",      "value": g},
                 {"key": "blueLevel",       "value": b},
                 {"key": "whiteLevel",      "value": white},
-                {"key": "power_watts",     "value": watts,
+                {"key": "powerWatts",     "value": watts,
                  "uiValue": f"{watts:.1f} W"},
             ]
             dev.updateStatesOnServer(kv)
