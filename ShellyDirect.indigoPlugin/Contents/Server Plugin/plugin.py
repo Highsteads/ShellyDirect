@@ -4,8 +4,14 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Sonnet 4.6
-# Date:        15-05-2026
-# Version:     3.1
+# Date:        16-05-2026
+# Version:     3.2
+#
+# v3.2 (16-05-2026):
+# - Standardised logging: replaced all self.logger.info/warning/error calls
+#   (109 sites) with the project-standard log() helper that prefixes each
+#   entry with [HH:MM:SS]. self.logger.debug calls retained — they remain
+#   filtered by the user-configurable plugin log level handler.
 #
 # v3.1 (15-05-2026):
 # - Demoted webhook switch/light echo log lines to debug to avoid duplicate
@@ -76,6 +82,11 @@ try:
     from IndigoSecrets import INDIGO_SERVER_IP as _SECRETS_INDIGO_IP
 except ImportError:
     _SECRETS_INDIGO_IP = ""
+
+
+def log(message, level="INFO"):
+    indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", level=level)
+
 
 PLUGIN_ID    = "com.clives.indigoplugin.shellydirect"
 WEBHOOK_PORT = 8178   # Plugin-owned HTTP listener
@@ -204,9 +215,9 @@ class Plugin(indigo.PluginBase):
         self.timeout         = int(prefs.get("timeout_secs",        3))
         self.server_ip       = _SECRETS_INDIGO_IP or prefs.get("indigo_server_ip", "")
         if not self.server_ip:
-            self.logger.error(
+            log(
                 "No Indigo server IP configured. Set INDIGO_SERVER_IP in IndigoSecrets.py "
-                "OR fill Indigo Server IP in Plugins -> ShellyDirect -> Configure."
+                "OR fill Indigo Server IP in Plugins -> ShellyDirect -> Configure.", level="ERROR"
             )
         self.subnets_raw     = prefs.get("discovery_subnets",       "192.168.4")
         self.subnets         = [s.strip() for s in self.subnets_raw.split(",") if s.strip()]
@@ -245,7 +256,7 @@ class Plugin(indigo.PluginBase):
         self._start_webhook_server()
 
     def shutdown(self):
-        self.logger.info("Shelly Direct plugin stopping")
+        log("Shelly Direct plugin stopping")
         self._save_energy_data()
         if self.webhook_server:
             self.webhook_server.shutdown()
@@ -356,7 +367,7 @@ class Plugin(indigo.PluginBase):
         new_ip = values_dict.get("ip_address", "").strip()
         old_ip = dev.pluginProps.get("ip_address", "").strip()
         if new_ip and new_ip != old_ip:
-            self.logger.info(f"[{dev.name}] IP changed {old_ip} -> {new_ip}; reconfiguring webhooks")
+            log(f"[{dev.name}] IP changed {old_ip} -> {new_ip}; reconfiguring webhooks")
             threading.Thread(
                 target=self._configure_webhooks, args=(dev,), daemon=True
             ).start()
@@ -378,50 +389,50 @@ class Plugin(indigo.PluginBase):
 
             ip = dev.pluginProps.get("ip_address", "").strip()
             if not ip:
-                self.logger.error(f'[{dev.name}] No IP address configured')
+                log(f'[{dev.name}] No IP address configured', level="ERROR")
                 return
 
             if action.deviceAction == indigo.kDeviceAction.TurnOn:
                 if self._set_output(dev, ip, True):
-                    self.logger.info(f'sent "{dev.name}" on')
+                    log(f'sent "{dev.name}" on')
                     dev.updateStateOnServer("onOffState", True)
                 else:
-                    self.logger.error(f'failed to send on to "{dev.name}"')
+                    log(f'failed to send on to "{dev.name}"', level="ERROR")
 
             elif action.deviceAction == indigo.kDeviceAction.TurnOff:
                 if dev.pluginProps.get("lock_off", False):
-                    self.logger.warning(f'[{dev.name}] Turn Off blocked - device is locked')
+                    log(f'[{dev.name}] Turn Off blocked - device is locked', level="WARNING")
                     return
                 if self._set_output(dev, ip, False):
-                    self.logger.info(f'sent "{dev.name}" off')
+                    log(f'sent "{dev.name}" off')
                     dev.updateStateOnServer("onOffState", False)
                 else:
-                    self.logger.error(f'failed to send off to "{dev.name}"')
+                    log(f'failed to send off to "{dev.name}"', level="ERROR")
 
             elif action.deviceAction == indigo.kDeviceAction.Toggle:
                 new_state = not dev.onState
                 if new_state is False and dev.pluginProps.get("lock_off", False):
-                    self.logger.warning(f'[{dev.name}] Toggle to Off blocked - device is locked')
+                    log(f'[{dev.name}] Toggle to Off blocked - device is locked', level="WARNING")
                     return
                 if self._set_output(dev, ip, new_state):
                     label = "on" if new_state else "off"
-                    self.logger.info(f'sent "{dev.name}" toggle -> {label}')
+                    log(f'sent "{dev.name}" toggle -> {label}')
                     dev.updateStateOnServer("onOffState", new_state)
                 else:
-                    self.logger.error(f'failed to toggle "{dev.name}"')
+                    log(f'failed to toggle "{dev.name}"', level="ERROR")
 
             elif action.deviceAction == indigo.kDeviceAction.RequestStatus:
                 self._poll_device(dev)
 
         except Exception as exc:
-            self.logger.error(f'actionControlDevice exception for "{dev.name}": {exc}')
+            log(f'actionControlDevice exception for "{dev.name}": {exc}', level="ERROR")
 
     def actionControlDimmer(self, action, dev):
         """Handle brightness actions for shellyDimmer and shellyRGBW devices."""
         try:
             ip = dev.pluginProps.get("ip_address", "").strip()
             if not ip:
-                self.logger.error(f'[{dev.name}] No IP address configured')
+                log(f'[{dev.name}] No IP address configured', level="ERROR")
                 return
 
             channel_id = int(dev.pluginProps.get("channel_id", 0))
@@ -429,25 +440,25 @@ class Plugin(indigo.PluginBase):
             if action.deviceAction == indigo.kDimmerAction.TurnOn:
                 if self._light_set(ip, channel_id, on=True):
                     dev.updateStateOnServer("onOffState", True)
-                    self.logger.info(f'sent "{dev.name}" on')
+                    log(f'sent "{dev.name}" on')
 
             elif action.deviceAction == indigo.kDimmerAction.TurnOff:
                 if self._light_set(ip, channel_id, on=False):
                     dev.updateStateOnServer("onOffState", False)
-                    self.logger.info(f'sent "{dev.name}" off')
+                    log(f'sent "{dev.name}" off')
 
             elif action.deviceAction == indigo.kDimmerAction.Toggle:
                 new_state = not dev.onState
                 if self._light_set(ip, channel_id, on=new_state):
                     dev.updateStateOnServer("onOffState", new_state)
-                    self.logger.info(f'sent "{dev.name}" toggle -> {"on" if new_state else "off"}')
+                    log(f'sent "{dev.name}" toggle -> {"on" if new_state else "off"}')
 
             elif action.deviceAction == indigo.kDimmerAction.SetBrightness:
                 brightness = max(0, min(100, int(action.actionValue)))
                 if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness):
                     dev.updateStateOnServer("brightnessLevel", brightness)
                     dev.updateStateOnServer("onOffState", brightness > 0)
-                    self.logger.info(f'sent "{dev.name}" brightness -> {brightness}%')
+                    log(f'sent "{dev.name}" brightness -> {brightness}%')
 
             elif action.deviceAction == indigo.kDimmerAction.BrightenBy:
                 current    = dev.states.get("brightnessLevel", 0)
@@ -455,7 +466,7 @@ class Plugin(indigo.PluginBase):
                 if self._light_set(ip, channel_id, on=True, brightness=brightness):
                     dev.updateStateOnServer("brightnessLevel", brightness)
                     dev.updateStateOnServer("onOffState", True)
-                    self.logger.info(f'sent "{dev.name}" brighten -> {brightness}%')
+                    log(f'sent "{dev.name}" brighten -> {brightness}%')
 
             elif action.deviceAction == indigo.kDimmerAction.DimBy:
                 current    = dev.states.get("brightnessLevel", 100)
@@ -463,13 +474,13 @@ class Plugin(indigo.PluginBase):
                 if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness):
                     dev.updateStateOnServer("brightnessLevel", brightness)
                     dev.updateStateOnServer("onOffState", brightness > 0)
-                    self.logger.info(f'sent "{dev.name}" dim -> {brightness}%')
+                    log(f'sent "{dev.name}" dim -> {brightness}%')
 
             elif action.deviceAction == indigo.kDimmerAction.RequestStatus:
                 self._poll_device(dev)
 
         except Exception as exc:
-            self.logger.error(f'actionControlDimmer exception for "{dev.name}": {exc}')
+            log(f'actionControlDimmer exception for "{dev.name}": {exc}', level="ERROR")
 
     # ---------------------------------------------------------------------------
     # Custom actions
@@ -483,16 +494,16 @@ class Plugin(indigo.PluginBase):
             ip      = dev.pluginProps.get("ip_address", "").strip()
             chan    = int(dev.pluginProps.get("channel_id", 0))
             if not ip:
-                self.logger.error(f'[{dev.name}] No IP for on_for_seconds')
+                log(f'[{dev.name}] No IP for on_for_seconds', level="ERROR")
                 return
             resp = self._rget(
                 f"http://{ip}/rpc/Switch.Set?id={chan}&on=true&toggle_after={seconds}"
             )
             resp.raise_for_status()
-            self.logger.info(f'[{dev.name}] on for {seconds}s')
+            log(f'[{dev.name}] on for {seconds}s')
             dev.updateStateOnServer("onOffState", True)
         except Exception as exc:
-            self.logger.error(f'[{action.deviceId}] on_for_seconds failed: {exc}')
+            log(f'[{action.deviceId}] on_for_seconds failed: {exc}', level="ERROR")
 
     def actionCoverOpen(self, action):
         self._cover_cmd(action.deviceId, "Cover.Open")
@@ -513,9 +524,9 @@ class Plugin(indigo.PluginBase):
             resp = self._rget(f"http://{ip}/rpc/Cover.GoToPosition", params={"id": 0, "pos": pos})
             resp.raise_for_status()
             dev.updateStateOnServer("targetPosition", pos)
-            self.logger.info(f'[{dev.name}] going to position {pos}%')
+            log(f'[{dev.name}] going to position {pos}%')
         except Exception as exc:
-            self.logger.error(f'[{action.deviceId}] GoToPosition failed: {exc}')
+            log(f'[{action.deviceId}] GoToPosition failed: {exc}', level="ERROR")
 
     def actionCoverSetTilt(self, action):
         """Set venetian blind tilt angle (0=closed slats, 100=open slats)."""
@@ -531,9 +542,9 @@ class Plugin(indigo.PluginBase):
             )
             resp.raise_for_status()
             dev.updateStateOnServer("tiltTargetPosition", tilt)
-            self.logger.info(f'[{dev.name}] tilt set to {tilt}%')
+            log(f'[{dev.name}] tilt set to {tilt}%')
         except Exception as exc:
-            self.logger.error(f'[{action.deviceId}] SetTilt failed: {exc}')
+            log(f'[{action.deviceId}] SetTilt failed: {exc}', level="ERROR")
 
     def actionSetBrightness(self, action):
         try:
@@ -546,9 +557,9 @@ class Plugin(indigo.PluginBase):
             if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness):
                 dev.updateStateOnServer("brightnessLevel", brightness)
                 dev.updateStateOnServer("onOffState", brightness > 0)
-                self.logger.info(f'[{dev.name}] brightness set to {brightness}%')
+                log(f'[{dev.name}] brightness set to {brightness}%')
         except Exception as exc:
-            self.logger.error(f'[{action.deviceId}] SetBrightness failed: {exc}')
+            log(f'[{action.deviceId}] SetBrightness failed: {exc}', level="ERROR")
 
     def actionSetColor(self, action):
         try:
@@ -574,9 +585,9 @@ class Plugin(indigo.PluginBase):
             dev.updateStateOnServer("blueLevel",       b)
             dev.updateStateOnServer("whiteLevel",      w)
             dev.updateStateOnServer("colorMode",       "color")
-            self.logger.info(f'[{dev.name}] color set R={r} G={g} B={b} W={w} @{br}%')
+            log(f'[{dev.name}] color set R={r} G={g} B={b} W={w} @{br}%')
         except Exception as exc:
-            self.logger.error(f'[{action.deviceId}] SetColor failed: {exc}')
+            log(f'[{action.deviceId}] SetColor failed: {exc}', level="ERROR")
 
     def actionSetEffect(self, action):
         """Trigger a built-in light effect on a Shelly RGBW device."""
@@ -592,9 +603,9 @@ class Plugin(indigo.PluginBase):
             )
             resp.raise_for_status()
             label = RGBW_EFFECTS.get(str(effect), f"effect {effect}")
-            self.logger.info(f'[{dev.name}] effect set: {label}')
+            log(f'[{dev.name}] effect set: {label}')
         except Exception as exc:
-            self.logger.error(f'[{action.deviceId}] SetEffect failed: {exc}')
+            log(f'[{action.deviceId}] SetEffect failed: {exc}', level="ERROR")
 
     # ---------------------------------------------------------------------------
     # Polling thread
@@ -642,7 +653,7 @@ class Plugin(indigo.PluginBase):
                         try:
                             self._poll_device(dev)
                         except Exception as exc:
-                            self.logger.warning(f'poll exception "{dev.name}": {exc}')
+                            log(f'poll exception "{dev.name}": {exc}', level="WARNING")
 
                 self.sleep(10)
         except self.StopThread:
@@ -654,14 +665,14 @@ class Plugin(indigo.PluginBase):
 
     def menuDiscoverDevices(self, values_dict=None, type_id=""):
         for subnet in self.subnets:
-            self.logger.info(f"Discovery started - scanning {subnet}.1 to {subnet}.254 ...")
+            log(f"Discovery started - scanning {subnet}.1 to {subnet}.254 ...")
             threading.Thread(
                 target=self._discover_thread, args=(subnet,), daemon=True
             ).start()
         return True
 
     def menuCheckFirmware(self, values_dict=None, type_id=""):
-        self.logger.info("Checking firmware versions ...")
+        log("Checking firmware versions ...")
         for dev in indigo.devices.iter("self"):
             if not dev.enabled:
                 continue
@@ -673,26 +684,26 @@ class Plugin(indigo.PluginBase):
                 resp.raise_for_status()
                 stable = resp.json().get("stable", {})
                 msg    = f"update available: {stable.get('version','?')}" if stable else "up to date"
-                self.logger.info(f'[{dev.name}] ({ip}) firmware {msg}')
+                log(f'[{dev.name}] ({ip}) firmware {msg}')
             except Exception as exc:
-                self.logger.warning(f'[{dev.name}] ({ip}) firmware check failed: {exc}')
+                log(f'[{dev.name}] ({ip}) firmware check failed: {exc}', level="WARNING")
         return True
 
     def menuResetWebhooks(self, values_dict=None, type_id=""):
-        self.logger.info("Reconfiguring webhooks on all devices ...")
+        log("Reconfiguring webhooks on all devices ...")
         count = sum(1 for dev in indigo.devices.iter("self")
                     if dev.enabled and dev.configured
                     and self._configure_webhooks(dev) is not None)
-        self.logger.info(f"Webhook reconfiguration complete ({count} device(s))")
+        log(f"Webhook reconfiguration complete ({count} device(s))")
         return True
 
     def menuDeviceHealthSummary(self, values_dict=None, type_id=""):
         """Log a formatted table showing status of every managed device."""
-        self.logger.info("-" * 100)
-        self.logger.info(
+        log("-" * 100)
+        log(
             f"{'Device':<30} {'IP':<18} {'Type':<18} {'Online':<8} {'Firmware':<12} {'Last Seen'}"
         )
-        self.logger.info("-" * 100)
+        log("-" * 100)
         now    = time.time()
         seen_n = 0
         for dev in sorted(indigo.devices.iter("self"), key=lambda d: d.name):
@@ -721,13 +732,13 @@ class Plugin(indigo.PluginBase):
                     fw = "unreachable"
 
             status = "Yes" if online else "OFFLINE"
-            self.logger.info(
+            log(
                 f"{dev.name:<30} {ip:<18} {dev.deviceTypeId:<18} {status:<8} {fw:<12} {age}"
             )
             seen_n += 1
 
-        self.logger.info("-" * 100)
-        self.logger.info(f"Total: {seen_n} device(s)")
+        log("-" * 100)
+        log(f"Total: {seen_n} device(s)")
         return True
 
     def menuExportEnergyHistory(self, values_dict=None, type_id=""):
@@ -758,9 +769,9 @@ class Plugin(indigo.PluginBase):
                         ])
                         row_count += 1
 
-            self.logger.info(f"Energy history exported: {filepath} ({row_count} rows)")
+            log(f"Energy history exported: {filepath} ({row_count} rows)")
         except Exception as exc:
-            self.logger.error(f"Energy history export failed: {exc}")
+            log(f"Energy history export failed: {exc}", level="ERROR")
         return True
 
     # ---------------------------------------------------------------------------
@@ -988,9 +999,9 @@ class Plugin(indigo.PluginBase):
             threading.Thread(
                 target=self.webhook_server.serve_forever, daemon=True
             ).start()
-            self.logger.info(f"Webhook listener started on port {WEBHOOK_PORT}")
+            log(f"Webhook listener started on port {WEBHOOK_PORT}")
         except Exception as exc:
-            self.logger.error(f"Could not start webhook listener on port {WEBHOOK_PORT}: {exc}")
+            log(f"Could not start webhook listener on port {WEBHOOK_PORT}: {exc}", level="ERROR")
             self.webhook_server = None
 
     # ---------------------------------------------------------------------------
@@ -1129,21 +1140,21 @@ class Plugin(indigo.PluginBase):
                     )
                     created += 1
 
-            self.logger.info(
+            log(
                 f'[{dev.name}] BLU webhooks OK on gateway {ip}'
                 + (f' ({created} created)' if created else ' (all present)')
             )
 
         except requests.exceptions.ConnectionError:
-            self.logger.warning(
-                f'[{dev.name}] BLU webhook setup failed — no route to gateway {ip}'
+            log(
+                f'[{dev.name}] BLU webhook setup failed — no route to gateway {ip}', level="WARNING"
             )
         except requests.exceptions.Timeout:
-            self.logger.warning(
-                f'[{dev.name}] BLU webhook setup timed out (gateway {ip})'
+            log(
+                f'[{dev.name}] BLU webhook setup timed out (gateway {ip})', level="WARNING"
             )
         except Exception as exc:
-            self.logger.warning(f'[{dev.name}] BLU webhook setup failed: {exc}')
+            log(f'[{dev.name}] BLU webhook setup failed: {exc}', level="WARNING")
 
     def _ensure_webhooks(self, ip, dev, wanted):
         """Create missing webhooks and delete stale ones for this device."""
@@ -1168,9 +1179,9 @@ class Plugin(indigo.PluginBase):
             for hook_id in stale_ids:
                 try:
                     self._rget(f"http://{ip}/rpc/Webhook.Delete", params={"id": hook_id})
-                    self.logger.info(f'[{dev.name}] Deleted stale webhook id={hook_id}')
+                    log(f'[{dev.name}] Deleted stale webhook id={hook_id}')
                 except Exception as exc:
-                    self.logger.warning(f'[{dev.name}] Could not delete stale hook {hook_id}: {exc}')
+                    log(f'[{dev.name}] Could not delete stale hook {hook_id}: {exc}', level="WARNING")
 
             for event, url, cid in wanted:
                 if url not in have_urls:
@@ -1181,14 +1192,14 @@ class Plugin(indigo.PluginBase):
                     )
                     self.logger.debug(f'[{dev.name}] Created {event} webhook (cid={cid})')
 
-            self.logger.info(f'[{dev.name}] Webhooks OK')
+            log(f'[{dev.name}] Webhooks OK')
 
         except requests.exceptions.ConnectionError:
-            self.logger.warning(f'[{dev.name}] Webhook setup failed - no route to {ip} - poll-only')
+            log(f'[{dev.name}] Webhook setup failed - no route to {ip} - poll-only', level="WARNING")
         except requests.exceptions.Timeout:
-            self.logger.warning(f'[{dev.name}] Webhook setup timed out ({ip}) - poll-only')
+            log(f'[{dev.name}] Webhook setup timed out ({ip}) - poll-only', level="WARNING")
         except Exception as exc:
-            self.logger.warning(f'[{dev.name}] Webhook setup failed: {exc} - poll-only')
+            log(f'[{dev.name}] Webhook setup failed: {exc} - poll-only', level="WARNING")
 
     def _setup_sensor_webhook(self, ip, dev, url_template, event):
         """Attempt to configure a webhook on a battery sensor; log manual URL on failure."""
@@ -1199,9 +1210,9 @@ class Plugin(indigo.PluginBase):
                         "event": event, "urls": json.dumps([url_template])}
             )
             resp.raise_for_status()
-            self.logger.info(f'[{dev.name}] Sensor webhook configured for {event}')
+            log(f'[{dev.name}] Sensor webhook configured for {event}')
         except Exception:
-            self.logger.info(
+            log(
                 f'[{dev.name}] Sensor webhook not configured (device likely asleep). '
                 f'Manually configure the device to POST to: {url_template}'
             )
@@ -1225,7 +1236,7 @@ class Plugin(indigo.PluginBase):
                     hooks    = resp.json().get("hooks", []) if resp.status_code == 200 else []
                     all_urls = [u for h in hooks for u in h.get("urls", [])]
                     if not any(f"shellyBluEvent?devId={dev.id}" in u for u in all_urls):
-                        self.logger.info(f'[{dev.name}] BLU webhooks missing - repairing ...')
+                        log(f'[{dev.name}] BLU webhooks missing - repairing ...')
                         self._configure_blu_webhooks(ip, dev)
                         repaired += 1
                 except Exception:
@@ -1243,13 +1254,13 @@ class Plugin(indigo.PluginBase):
                 base     = f"http://{self.server_ip}:{WEBHOOK_PORT}/shellyEvent?devId={dev.id}"
                 # Check at least one webhook for this device exists
                 if not any(f"devId={dev.id}" in u for u in all_urls):
-                    self.logger.info(f'[{dev.name}] Webhooks missing - repairing ...')
+                    log(f'[{dev.name}] Webhooks missing - repairing ...')
                     self._configure_webhooks(dev)
                     repaired += 1
             except Exception:
                 pass   # Device unreachable - skip silently
         if repaired:
-            self.logger.info(f"Webhook health check complete: {repaired} device(s) repaired")
+            log(f"Webhook health check complete: {repaired} device(s) repaired")
         else:
             self.logger.debug("Webhook health check complete: all OK")
 
@@ -1274,7 +1285,7 @@ class Plugin(indigo.PluginBase):
         self.last_seen[dev.id] = time.time()
         if not dev.states.get("deviceOnline", True):
             dev.updateStateOnServer("deviceOnline", True)
-            self.logger.info(f'[{dev.name}] back online (BLU webhook)')
+            log(f'[{dev.name}] back online (BLU webhook)')
 
         kv = [
             {"key": "sensorValue", "value": True},
@@ -1294,7 +1305,7 @@ class Plugin(indigo.PluginBase):
         dev.updateStatesOnServer(kv)
 
         label = f"button {idx} " if dev.deviceTypeId == "shellyBluRC4" else ""
-        self.logger.info(f'[webhook] "{dev.name}" BLU {label}{event}')
+        log(f'[webhook] "{dev.name}" BLU {label}{event}')
 
         self._fire_trigger("bluButtonPress", dev.id, {
             "press_type": event,
@@ -1330,7 +1341,7 @@ class Plugin(indigo.PluginBase):
 
         msg = f"Shelly firmware updates available ({len(updates)} device(s)):\n" + \
               "\n".join(f"  {u}" for u in updates)
-        self.logger.info(msg)
+        log(msg)
 
         # Send via Pushover if plugin is available
         try:
@@ -1427,7 +1438,7 @@ class Plugin(indigo.PluginBase):
         except requests.exceptions.Timeout:
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
-            self.logger.warning(f'[{dev.name}] poll error: {exc}')
+            log(f'[{dev.name}] poll error: {exc}', level="WARNING")
 
     def _poll_uni(self, dev):
         ip = dev.pluginProps.get("ip_address", "").strip()
@@ -1472,7 +1483,7 @@ class Plugin(indigo.PluginBase):
         except requests.exceptions.Timeout:
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
-            self.logger.warning(f'[{dev.name}] Uni poll error: {exc}')
+            log(f'[{dev.name}] Uni poll error: {exc}', level="WARNING")
 
     def _poll_cover(self, dev):
         ip = dev.pluginProps.get("ip_address", "").strip()
@@ -1527,7 +1538,7 @@ class Plugin(indigo.PluginBase):
         except requests.exceptions.Timeout:
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
-            self.logger.warning(f'[{dev.name}] cover poll error: {exc}')
+            log(f'[{dev.name}] cover poll error: {exc}', level="WARNING")
 
     def _poll_dimmer(self, dev):
         ip     = dev.pluginProps.get("ip_address", "").strip()
@@ -1566,7 +1577,7 @@ class Plugin(indigo.PluginBase):
         except requests.exceptions.Timeout:
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
-            self.logger.warning(f'[{dev.name}] dimmer poll error: {exc}')
+            log(f'[{dev.name}] dimmer poll error: {exc}', level="WARNING")
 
     def _poll_i4(self, dev):
         ip = dev.pluginProps.get("ip_address", "").strip()
@@ -1593,7 +1604,7 @@ class Plugin(indigo.PluginBase):
         except requests.exceptions.Timeout:
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
-            self.logger.warning(f'[{dev.name}] i4 poll error: {exc}')
+            log(f'[{dev.name}] i4 poll error: {exc}', level="WARNING")
 
     def _poll_em(self, dev):
         ip        = dev.pluginProps.get("ip_address", "").strip()
@@ -1670,7 +1681,7 @@ class Plugin(indigo.PluginBase):
         except requests.exceptions.Timeout:
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
-            self.logger.warning(f'[{dev.name}] EM poll error: {exc}')
+            log(f'[{dev.name}] EM poll error: {exc}', level="WARNING")
 
     def _poll_rgbw(self, dev):
         ip = dev.pluginProps.get("ip_address", "").strip()
@@ -1714,7 +1725,7 @@ class Plugin(indigo.PluginBase):
         except requests.exceptions.Timeout:
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
-            self.logger.warning(f'[{dev.name}] RGBW poll error: {exc}')
+            log(f'[{dev.name}] RGBW poll error: {exc}', level="WARNING")
 
     # ---------------------------------------------------------------------------
     # RPC helpers
@@ -1741,11 +1752,11 @@ class Plugin(indigo.PluginBase):
             resp.raise_for_status()
             return True
         except requests.exceptions.ConnectionError:
-            self.logger.error(f'[{dev_name}] No route to {ip}')
+            log(f'[{dev_name}] No route to {ip}', level="ERROR")
         except requests.exceptions.Timeout:
-            self.logger.error(f'[{dev_name}] Timed out ({ip})')
+            log(f'[{dev_name}] Timed out ({ip})', level="ERROR")
         except Exception as exc:
-            self.logger.error(f'[{dev_name}] Command failed: {exc}')
+            log(f'[{dev_name}] Command failed: {exc}', level="ERROR")
         return False
 
     def _light_set(self, ip, channel_id, on, brightness=None):
@@ -1757,7 +1768,7 @@ class Plugin(indigo.PluginBase):
             resp.raise_for_status()
             return True
         except Exception as exc:
-            self.logger.error(f'Light.Set failed ({ip}): {exc}')
+            log(f'Light.Set failed ({ip}): {exc}', level="ERROR")
             return False
 
     def _cover_cmd(self, dev_id, rpc_method):
@@ -1768,10 +1779,10 @@ class Plugin(indigo.PluginBase):
                 return
             resp = self._rget(f"http://{ip}/rpc/{rpc_method}?id=0")
             resp.raise_for_status()
-            self.logger.info(f'[{dev.name}] {rpc_method}')
+            log(f'[{dev.name}] {rpc_method}')
             self.last_polled[dev_id] = 0   # Trigger immediate poll on next tick
         except Exception as exc:
-            self.logger.error(f'[{dev_id}] {rpc_method} failed: {exc}')
+            log(f'[{dev_id}] {rpc_method} failed: {exc}', level="ERROR")
 
     def _cover_standard_action(self, action, dev):
         """Map standard relay actions to cover commands."""
@@ -1797,7 +1808,7 @@ class Plugin(indigo.PluginBase):
         self.fail_count[dev.id] = 0          # reset consecutive failure counter
         if not dev.states.get("deviceOnline", True):
             dev.updateStateOnServer("deviceOnline", True)
-            self.logger.info(f'[{dev.name}] back online')
+            log(f'[{dev.name}] back online')
 
     # ---------------------------------------------------------------------------
     # Dynamic-state capture (Z2M v1.7.1 / Ecowitt v2.1 pattern)
@@ -1899,9 +1910,9 @@ class Plugin(indigo.PluginBase):
                 new_props["seenDynamicKeys"] = ",".join(sorted(seen))
                 dev.replacePluginPropsOnServer(new_props)
                 indigo.devices[dev.id].stateListOrDisplayStateIdChanged()
-                self.logger.info(f'[{dev.name}] imported {len(new_keys)} new field(s): {new_keys}')
+                log(f'[{dev.name}] imported {len(new_keys)} new field(s): {new_keys}')
             except Exception as e:
-                self.logger.error(f'[{dev.name}] dynamic-state refresh failed; rolling back. err={e}; new_keys={new_keys}')
+                log(f'[{dev.name}] dynamic-state refresh failed; rolling back. err={e}; new_keys={new_keys}', level="ERROR")
                 try:
                     rollback = dict(dev.pluginProps)
                     rollback["seenDynamicKeys"] = seen_csv
@@ -1915,7 +1926,7 @@ class Plugin(indigo.PluginBase):
                 dev.updateStateOnServer(state_key, state_val)
             except Exception as e:
                 if self.debug:
-                    self.logger.warning(f'[{dev.name}] dynamic state {state_key!r} write failed: {e}')
+                    log(f'[{dev.name}] dynamic state {state_key!r} write failed: {e}', level="WARNING")
 
     def getDeviceStateList(self, dev):
         """Override to advertise dynamic states alongside the static Devices.xml ones.
@@ -1966,7 +1977,7 @@ class Plugin(indigo.PluginBase):
         if dev.states.get("deviceOnline", True):
             dev.updateStateOnServer("deviceOnline", False)
             if not dev.pluginProps.get("suppress_offline_alerts", False):
-                self.logger.warning(f'[{dev.name}] offline - {reason}')
+                log(f'[{dev.name}] offline - {reason}', level="WARNING")
                 self._fire_trigger("deviceWentOffline", dev.id)
 
     def _check_online(self, dev, now):
@@ -1992,7 +2003,7 @@ class Plugin(indigo.PluginBase):
                     self.energy_data = json.load(f)
                 self.logger.debug(f"Energy data loaded ({len(self.energy_data)} device(s))")
         except Exception as exc:
-            self.logger.warning(f"Could not load energy data: {exc} - starting fresh")
+            log(f"Could not load energy data: {exc} - starting fresh", level="WARNING")
             self.energy_data = {}
 
     def _save_energy_data(self):
@@ -2000,7 +2011,7 @@ class Plugin(indigo.PluginBase):
             with open(self._energy_data_path(), "w") as f:
                 json.dump(self.energy_data, f, indent=2)
         except Exception as exc:
-            self.logger.warning(f"Could not save energy data: {exc}")
+            log(f"Could not save energy data: {exc}", level="WARNING")
 
     def _calc_energy(self, dev_id, total_wh):
         key       = str(dev_id)
@@ -2023,7 +2034,7 @@ class Plugin(indigo.PluginBase):
 
     def _midnight_reset(self, today_str):
         month_str = today_str[:7]
-        self.logger.info(f"Date changed to {today_str} - resetting daily energy baselines")
+        log(f"Date changed to {today_str} - resetting daily energy baselines")
         energy_types = {"shellyRelay", "shellyEM"}
         for dev in indigo.devices.iter("self"):
             if dev.deviceTypeId not in energy_types:
@@ -2063,11 +2074,11 @@ class Plugin(indigo.PluginBase):
                 if entry.get("month_date") != month_str:
                     entry["month_baseline_wh"] = total_wh
                     entry["month_date"]        = month_str
-                    self.logger.info(f'[{dev.name}] Monthly baseline reset for {month_str}')
+                    log(f'[{dev.name}] Monthly baseline reset for {month_str}')
                 self.energy_data[key] = entry
 
             except Exception as exc:
-                self.logger.warning(f'[{dev.name}] Midnight reset failed: {exc}')
+                log(f'[{dev.name}] Midnight reset failed: {exc}', level="WARNING")
 
         self._save_energy_data()
 
@@ -2087,7 +2098,7 @@ class Plugin(indigo.PluginBase):
                 self.var_folder_id = folder.id
                 return folder.id
         folder = indigo.variables.folder.create(VAR_FOLDER)
-        self.logger.info(f"Created variable folder: {VAR_FOLDER}")
+        log(f"Created variable folder: {VAR_FOLDER}")
         self.var_folder_id = folder.id
         return folder.id
 
@@ -2120,7 +2131,7 @@ class Plugin(indigo.PluginBase):
                 var_name = f"{prefix}_{suffix}"
                 self._get_or_create_var(var_name, folder_id, str(value))
         except Exception as exc:
-            self.logger.warning(f'[{dev.name}] Variable mirror failed: {exc}')
+            log(f'[{dev.name}] Variable mirror failed: {exc}', level="WARNING")
 
     # ---------------------------------------------------------------------------
     # Power alert
@@ -2142,14 +2153,14 @@ class Plugin(indigo.PluginBase):
 
         if watts > threshold and not was_alerting:
             self.power_alert_active[dev.id] = True
-            self.logger.warning(
-                f'[{dev.name}] High power alert: {watts:.1f} W exceeds {threshold:.0f} W threshold'
+            log(
+                f'[{dev.name}] High power alert: {watts:.1f} W exceeds {threshold:.0f} W threshold', level="WARNING"
             )
             self._fire_trigger("highPowerAlert", dev.id)
 
         elif watts <= threshold and was_alerting:
             self.power_alert_active[dev.id] = False
-            self.logger.info(f'[{dev.name}] Power back within threshold: {watts:.1f} W')
+            log(f'[{dev.name}] Power back within threshold: {watts:.1f} W')
 
     # ---------------------------------------------------------------------------
     # Trigger helpers
@@ -2183,7 +2194,7 @@ class Plugin(indigo.PluginBase):
             try:
                 indigo.trigger.execute(trigger)
             except Exception as exc:
-                self.logger.warning(f'Trigger execute failed ({type_id}): {exc}')
+                log(f'Trigger execute failed ({type_id}): {exc}', level="WARNING")
 
     def getAllShellyDevices(self, filter="", valuesDict=None, typeId="", targetId=0):
         """Dynamic list of all plugin devices for use in Events.xml selectors."""
@@ -2230,7 +2241,7 @@ class Plugin(indigo.PluginBase):
             if folder.name == folder_name:
                 return folder.id
         folder = indigo.devices.folder.create(folder_name)
-        self.logger.info(f"Created device folder: {folder_name}")
+        log(f"Created device folder: {folder_name}")
         return folder.id
 
     def _existing_device_ips(self):
@@ -2316,7 +2327,7 @@ class Plugin(indigo.PluginBase):
             )
             return dev
         except Exception as exc:
-            self.logger.error(f"[Discovery] Could not create device for {ip}: {exc}")
+            log(f"[Discovery] Could not create device for {ip}: {exc}", level="ERROR")
             return None
 
     def _discover_thread(self, subnet):
@@ -2360,7 +2371,7 @@ class Plugin(indigo.PluginBase):
                         new_props = dict(old_dev.pluginProps)
                         new_props["ip_address"] = ip
                         old_dev.replacePluginPropsOnServer(new_props)
-                        self.logger.info(
+                        log(
                             f"[Discovery] {old_dev.name:<30} IP updated {old_ip} -> {ip} -- reconfiguring webhooks"
                         )
                         fresh = indigo.devices[old_dev.id]
@@ -2368,21 +2379,21 @@ class Plugin(indigo.PluginBase):
                             target=self._configure_webhooks, args=(fresh,), daemon=True
                         ).start()
                     elif was_offline:
-                        self.logger.info(
+                        log(
                             f"[Discovery] {old_dev.name:<30} {ip:<18} -- reachable but offline, repairing webhooks"
                         )
                         threading.Thread(
                             target=self._configure_webhooks, args=(old_dev,), daemon=True
                         ).start()
                     else:
-                        self.logger.info(
+                        log(
                             f"[Discovery] {old_dev.name:<30} {ip:<18} -- already configured"
                         )
                     skipped.append(ip)
                     continue
 
                 if ip in existing_ips:
-                    self.logger.info(
+                    log(
                         f"[Discovery] {ip:<18} gen={gen}  {label:<22} -- already configured"
                     )
                     skipped.append(ip)
@@ -2398,7 +2409,7 @@ class Plugin(indigo.PluginBase):
                         )
                         if new_dev:
                             created.append(new_dev.name)
-                            self.logger.info(
+                            log(
                                 f"[Discovery] {ip:<18} gen={gen}  {label:<22} "
                                 f"-- created '{new_dev.name}' (cover mode)"
                             )
@@ -2414,7 +2425,7 @@ class Plugin(indigo.PluginBase):
                         )
                         if new_dev:
                             created.append(new_dev.name)
-                    self.logger.info(
+                    log(
                         f"[Discovery] {ip:<18} gen={gen}  {label:<22} "
                         f"-- created {num_ch} channel device(s)"
                     )
@@ -2432,7 +2443,7 @@ class Plugin(indigo.PluginBase):
                 if new_dev:
                     created.append(new_dev.name)
                     pm_str = "PM" if has_pm else "no PM"
-                    self.logger.info(
+                    log(
                         f"[Discovery] {ip:<18} gen={gen}  {label:<22} "
                         f"name={name or '(none)'}  mac={mac}  ({pm_str})  "
                         f"-- created '{new_dev.name}'"
@@ -2443,14 +2454,14 @@ class Plugin(indigo.PluginBase):
 
         total = len(found)
         if total == 0:
-            self.logger.info(f"Discovery complete: no Shelly devices found on {subnet}.0/24")
+            log(f"Discovery complete: no Shelly devices found on {subnet}.0/24")
         else:
-            self.logger.info(
+            log(
                 f"Discovery complete: {total} found  |  "
                 f"{len(created)} created  |  {len(skipped)} already configured"
             )
             for n in created:
-                self.logger.info(f"  [+] {n}")
+                log(f"  [+] {n}")
 
     # ---------------------------------------------------------------------------
     # Menu handlers
