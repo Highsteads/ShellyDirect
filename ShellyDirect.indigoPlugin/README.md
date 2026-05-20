@@ -1,7 +1,7 @@
 # ShellyDirect — Indigo Plugin
 
-**Version:** 2.2
-**Platform:** Indigo 2025.1 (macOS, Python 3.11)
+**Version:** 3.2
+**Platform:** Indigo 2025.2+ (macOS, Python 3.13)
 **Author:** CliveS & Claude Sonnet 4.6
 **Shelly compatibility:** Gen 2, Gen 3, Gen 4 (RPC HTTP API)
 
