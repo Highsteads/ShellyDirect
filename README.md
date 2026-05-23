@@ -2,7 +2,7 @@
 
 Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo](https://www.indigodomo.com/). No cloud, no MQTT.
 
-**Version:** 3.2 | **Author:** CliveS & Claude Sonnet 4.6 | **Platform:** Indigo 2022.1 or later
+**Version:** 3.3 | **Author:** CliveS & Claude Opus 4.7 | **Platform:** Indigo 2022.1 or later
 
 *Developed and tested on Indigo 2025.2 / Python 3.13. Older Indigo releases that meet the minimum API version above should also work — the API floor is what Indigo's plugin loader actually checks.*
 
@@ -40,3 +40,17 @@ local network with no cloud auth — the only credentials it might use are
 optional Digest Auth username/password for Shelly devices that have a
 password set. These can be entered via **Plugins → Shelly Direct →
 Configure** or added to `IndigoSecrets.py` if you prefer.
+
+**Keys read by ShellyDirect** *(v3.3+)*:
+
+```python
+INDIGO_SERVER_IP         = "192.168.x.x"   # IP Shelly devices use for webhook callbacks
+SHELLY_USERNAME          = ""              # optional — only if your Shellies have auth set
+SHELLY_PASSWORD          = ""              # optional — paired with SHELLY_USERNAME
+SHELLY_DISCOVERY_SUBNETS = "192.168.x"     # first three octets, comma-separate for multi-subnet
+```
+
+All four are read from `IndigoSecrets.py` first, then PluginConfig as a
+fallback. The plugin has **no built-in default discovery subnet** — set
+one in either source or device discovery is skipped (the rest of the
+plugin keeps working).
