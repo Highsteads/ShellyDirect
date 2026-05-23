@@ -5,7 +5,7 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Sonnet 4.6
 # Date:        16-05-2026
-# Version:     3.2
+# Version:     3.3
 #
 # v3.2 (16-05-2026):
 # - Standardised logging: replaced all self.logger.info/warning/error calls
@@ -78,10 +78,23 @@ except ImportError:
     log_startup_banner = None
 
 _sys.path.insert(0, "/Library/Application Support/Perceptive Automation")
+# Per-key try/except so a missing single key does not blank the others.
 try:
     from IndigoSecrets import INDIGO_SERVER_IP as _SECRETS_INDIGO_IP
 except ImportError:
     _SECRETS_INDIGO_IP = ""
+try:
+    from IndigoSecrets import SHELLY_USERNAME as _SECRETS_SHELLY_USER
+except ImportError:
+    _SECRETS_SHELLY_USER = ""
+try:
+    from IndigoSecrets import SHELLY_PASSWORD as _SECRETS_SHELLY_PASS
+except ImportError:
+    _SECRETS_SHELLY_PASS = ""
+try:
+    from IndigoSecrets import SHELLY_DISCOVERY_SUBNETS as _SECRETS_SHELLY_SUBNETS
+except ImportError:
+    _SECRETS_SHELLY_SUBNETS = ""
 
 
 def log(message, level="INFO"):
@@ -219,11 +232,20 @@ class Plugin(indigo.PluginBase):
                 "No Indigo server IP configured. Set INDIGO_SERVER_IP in IndigoSecrets.py "
                 "OR fill Indigo Server IP in Plugins -> ShellyDirect -> Configure.", level="ERROR"
             )
-        self.subnets_raw     = prefs.get("discovery_subnets",       "192.168.4")
+        # discovery_subnets / shelly auth: IndigoSecrets first, PluginConfig fallback.
+        # No hardcoded default subnet — it depended on the developer's LAN.
+        self.subnets_raw     = (_SECRETS_SHELLY_SUBNETS or prefs.get("discovery_subnets", "")).strip()
         self.subnets         = [s.strip() for s in self.subnets_raw.split(",") if s.strip()]
+        if not self.subnets:
+            log(
+                "No discovery subnets configured. Set SHELLY_DISCOVERY_SUBNETS in "
+                "IndigoSecrets.py OR fill Discovery Subnets in Plugins -> ShellyDirect "
+                "-> Configure (e.g. '192.168.1' for a 192.168.1.0/24 LAN).",
+                level="ERROR",
+            )
         self.stale_minutes   = int(prefs.get("stale_minutes",       10))
-        self.shelly_user     = prefs.get("shelly_username",         "").strip()
-        self.shelly_pass     = prefs.get("shelly_password",         "").strip()
+        self.shelly_user     = (_SECRETS_SHELLY_USER or prefs.get("shelly_username", "")).strip()
+        self.shelly_pass     = (_SECRETS_SHELLY_PASS or prefs.get("shelly_password", "")).strip()
         self.firmware_notify = prefs.get("firmware_notify_enabled", False)
 
         self.last_polled          = {}   # {dev_id: float}

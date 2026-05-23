@@ -10,13 +10,13 @@
 
 	<Field id="sep0" type="separator"/>
 
-	<Field id="discovery_subnets" type="textfield" defaultValue="192.168.4">
+	<Field id="discovery_subnets" type="textfield" defaultValue="">
 		<Label>Discovery Subnets:</Label>
 	</Field>
 	<Field id="hlpSubnet" type="label" fontSize="mini" alignWithControl="true">
 		<Label>First three octets only. Comma-separate multiple subnets for complex networks.
-Examples: 192.168.4    or    192.168.4, 192.168.10, 10.0.1
-Discovery scans .1 to .254 on each subnet.</Label>
+Examples: 192.168.1    or    192.168.1, 192.168.10, 10.0.1
+Discovery scans .1 to .254 on each subnet. Read from IndigoSecrets.SHELLY_DISCOVERY_SUBNETS first; this field is a fallback. No default — set one or the other.</Label>
 	</Field>
 
 	<Field id="sep1" type="separator"/>
@@ -43,7 +43,8 @@ Discovery scans .1 to .254 on each subnet.</Label>
 	</Field>
 	<Field id="hlpAuth" type="label" fontSize="mini" alignWithControl="true">
 		<Label>Optional. Leave blank if your Shelly devices do not have authentication enabled.
-If set, Digest Auth is used on all RPC calls. All devices must share the same credentials.</Label>
+If set, Digest Auth is used on all RPC calls. All devices must share the same credentials.
+Read from IndigoSecrets.SHELLY_USERNAME / SHELLY_PASSWORD first; these fields are a fallback.</Label>
 	</Field>
 
 	<Field id="sep3" type="separator"/>
