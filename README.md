@@ -2,7 +2,7 @@
 
 Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo](https://www.indigodomo.com/). No cloud, no MQTT.
 
-**Version:** 3.3 | **Author:** CliveS & Claude Opus 4.7 | **Platform:** Indigo 2022.1 or later
+**Version:** 3.4 | **Author:** CliveS & Claude Opus 4.7 | **Platform:** Indigo 2022.1 or later
 
 *Developed and tested on Indigo 2025.2 / Python 3.13. Older Indigo releases that meet the minimum API version above should also work — the API floor is what Indigo's plugin loader actually checks.*
 
@@ -54,3 +54,16 @@ All four are read from `IndigoSecrets.py` first, then PluginConfig as a
 fallback. The plugin has **no built-in default discovery subnet** — set
 one in either source or device discovery is skipped (the rest of the
 plugin keeps working).
+
+## Logging
+
+Every log line is prefixed with a millisecond timestamp `[HH:MM:SS.mmm]` so
+events can be correlated tightly with other CliveS plugins (Device Activity
+Monitor uses the same convention).
+
+To turn the prefix off (or back on) at any time:
+
+**Plugins → Shelly Direct → Toggle Timestamps in Log (on/off)**
+
+The setting is stored in `pluginPrefs` (`timestampEnabled`) and persists across
+restarts. Defaults to ON.

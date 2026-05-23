@@ -3,9 +3,15 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Sonnet 4.6
-# Date:        16-05-2026
-# Version:     3.3
+# Author:      CliveS & Claude Opus 4.7
+# Date:        23-05-2026
+# Version:     3.4
+#
+# v3.4 (23-05-2026): Millisecond timestamp [HH:MM:SS.mmm] prefix on every
+# log line via plugin_utils.install_timestamp_filter() — matches Device
+# Activity Monitor convention. Module-level log() helper bumped to
+# ms-precision so indigo.server.log()-routed lines also match.
+# New "Toggle Timestamps in Log" menu item.
 #
 # v3.2 (16-05-2026):
 # - Standardised logging: replaced all self.logger.info/warning/error calls
@@ -76,6 +82,10 @@ try:
     from plugin_utils import log_startup_banner
 except ImportError:
     log_startup_banner = None
+try:
+    from plugin_utils import install_timestamp_filter
+except ImportError:
+    install_timestamp_filter = None
 
 _sys.path.insert(0, "/Library/Application Support/Perceptive Automation")
 # Per-key try/except so a missing single key does not blank the others.
@@ -98,7 +108,7 @@ except ImportError:
 
 
 def log(message, level="INFO"):
-    indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", level=level)
+    indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {message}", level=level)
 
 
 PLUGIN_ID    = "com.clives.indigoplugin.shellydirect"
@@ -224,6 +234,12 @@ class Plugin(indigo.PluginBase):
 
     def __init__(self, plugin_id, display_name, version, prefs):
         super().__init__(plugin_id, display_name, version, prefs)
+
+        self.timestamp_enabled = bool(prefs.get("timestampEnabled", True))
+        if install_timestamp_filter:
+            self._ts_filter = install_timestamp_filter(self, enabled=self.timestamp_enabled)
+        else:
+            self._ts_filter = None
 
         self.timeout         = int(prefs.get("timeout_secs",        3))
         self.server_ip       = _SECRETS_INDIGO_IP or prefs.get("indigo_server_ip", "")
@@ -2490,12 +2506,24 @@ class Plugin(indigo.PluginBase):
     # ---------------------------------------------------------------------------
 
     def showPluginInfo(self, valuesDict=None, typeId=None):
+        extras = [
+            ("Webhook Port:",      str(WEBHOOK_PORT)),
+            ("Discovery Subnets:", self.subnets_raw),
+            ("Auth Enabled:",      "Yes" if self.shelly_user else "No"),
+            ("Firmware Notify:",   "Yes" if self.firmware_notify else "No"),
+            ("Timestamps in Log:", "ON" if self.timestamp_enabled else "OFF"),
+        ]
         if log_startup_banner:
-            log_startup_banner(self.pluginId, self.pluginDisplayName, self.pluginVersion, extras=[
-                ("Webhook Port:",      str(WEBHOOK_PORT)),
-                ("Discovery Subnets:", self.subnets_raw),
-                ("Auth Enabled:",      "Yes" if self.shelly_user else "No"),
-                ("Firmware Notify:",   "Yes" if self.firmware_notify else "No"),
-            ])
+            log_startup_banner(self.pluginId, self.pluginDisplayName, self.pluginVersion, extras=extras)
         else:
             indigo.server.log(f"{self.pluginDisplayName} v{self.pluginVersion}")
+            for label, value in extras:
+                indigo.server.log(f"  {label} {value}")
+
+    def menuToggleTimestamps(self):
+        self.timestamp_enabled = not self.timestamp_enabled
+        self.pluginPrefs["timestampEnabled"] = self.timestamp_enabled
+        if self._ts_filter:
+            self._ts_filter.enabled = self.timestamp_enabled
+        state = "ON" if self.timestamp_enabled else "OFF"
+        indigo.server.log(f"[{self.pluginDisplayName}] Timestamps in Log -> {state}")
