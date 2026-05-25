@@ -280,15 +280,7 @@ class Plugin(indigo.PluginBase):
         self.indigo_log_handler.setLevel(log_level)
         self._load_energy_data()
 
-        if log_startup_banner:
-            log_startup_banner(plugin_id, display_name, version, extras=[
-                ("Webhook Port:",      str(WEBHOOK_PORT)),
-                ("Discovery Subnets:", self.subnets_raw),
-                ("Auth Enabled:",      "Yes" if self.shelly_user else "No"),
-                ("Firmware Notify:",   "Yes" if self.firmware_notify else "No"),
-            ])
-        else:
-            indigo.server.log(f"{display_name} v{version} starting")
+        # Startup banner moved to showPluginInfo on demand (revised 25-May-2026 per Jay).
 
     def startup(self):
         self._start_webhook_server()
