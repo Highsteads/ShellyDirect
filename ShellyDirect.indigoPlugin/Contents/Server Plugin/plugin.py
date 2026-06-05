@@ -5,7 +5,7 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 4.7
 # Date:        23-05-2026
-# Version:     3.4
+# Version:     3.5
 #
 # v3.4 (23-05-2026): Millisecond timestamp [HH:MM:SS.mmm] prefix on every
 # log line via plugin_utils.install_timestamp_filter() — matches Device
@@ -406,6 +406,18 @@ class Plugin(indigo.PluginBase):
     # Standard device actions  (relay, uni, cover on/off, dimmer on/off)
     # ---------------------------------------------------------------------------
 
+    def actionControlSensor(self, action, dev):
+        # Seven device types are declared type="sensor" (shellyHT/I4/Smoke/Flood/EM/BluButton/BluRC4).
+        # Without this method Indigo logs "plugin does not define method actionControlSensor" and drops
+        # the action. RequestStatus re-polls via _poll_device (a no-op for the push-only types).
+        try:
+            if action.sensorAction == indigo.kSensorAction.RequestStatus:
+                self._poll_device(dev)
+            else:
+                self.logger.warning(f"{dev.name}: unsupported sensor action {action.sensorAction}")
+        except Exception as e:
+            self.logger.error(f"{dev.name}: actionControlSensor failed — {e}")
+
     def actionControlDevice(self, action, dev):
         try:
             if not dev.enabled:
@@ -780,7 +792,7 @@ class Plugin(indigo.PluginBase):
             filepath  = os.path.join(out_dir, filename)
             row_count = 0
 
-            with open(filepath, "w", newline="") as f:
+            with open(filepath, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow(["Date", "Device", "kWh"])
 
@@ -1376,10 +1388,11 @@ class Plugin(indigo.PluginBase):
         # Send via Pushover if plugin is available
         try:
             po = indigo.server.getPlugin("io.thechad.indigoplugin.pushover")
-            if po.isEnabled():
-                po.executeAction("sendPushover", props={
-                    "title":   "Shelly Firmware Updates",
-                    "message": "\n".join(updates),
+            if po and po.isEnabled():
+                po.executeAction("send", props={
+                    "msgTitle":    "Shelly Firmware Updates",
+                    "msgBody":     "\n".join(updates),
+                    "msgPriority": "0",
                 })
         except Exception:
             pass   # Pushover not available - log-only is fine
