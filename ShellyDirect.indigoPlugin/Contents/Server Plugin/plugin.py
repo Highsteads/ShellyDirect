@@ -3,9 +3,25 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 4.7
-# Date:        23-05-2026
-# Version:     3.5
+# Author:      CliveS & Claude Opus 4.8
+# Date:        06-06-2026
+# Version:     3.6
+#
+# v3.6 (06-06-2026) — deep-review batch 1 (HIGH + robustness):
+# - Energy phantom-zero FIX: a successful poll missing aenergy.total /
+#   total_act_energy used to default to 0, tripping _calc_energy's counter-reset
+#   rule and zeroing the day/month baseline -> phantom multi-thousand-kWh spike.
+#   New _get_total_wh() returns None for an absent field; _poll_relay/_poll_em/
+#   _midnight_reset now skip the energy update and preserve last-known-good.
+# - runConcurrentThread hardened: whole per-device body wrapped, poll_interval
+#   coercion guarded (_pref_int), midnight reset wrapped — one bad device/error
+#   can no longer kill the polling thread.
+# - _poll_* generic except now marks the device offline (a device returning
+#   malformed JSON no longer stays "online" forever).
+# - __init__/closedPrefsConfigUi int() coercions guarded via _pref_int.
+# - shutdown() now server_close()s the webhook socket (FD leak on reload).
+# - Energy JSON read/write use encoding="utf-8"; hardcoded "192.168.4" fallback
+#   removed; dead `base` var in _check_webhook_health removed. +15 tests.
 #
 # v3.4 (23-05-2026): Millisecond timestamp [HH:MM:SS.mmm] prefix on every
 # log line via plugin_utils.install_timestamp_filter() — matches Device
@@ -241,7 +257,7 @@ class Plugin(indigo.PluginBase):
         else:
             self._ts_filter = None
 
-        self.timeout         = int(prefs.get("timeout_secs",        3))
+        self.timeout         = self._pref_int(prefs, "timeout_secs",   3)
         self.server_ip       = _SECRETS_INDIGO_IP or prefs.get("indigo_server_ip", "")
         if not self.server_ip:
             log(
@@ -259,7 +275,7 @@ class Plugin(indigo.PluginBase):
                 "-> Configure (e.g. '192.168.1' for a 192.168.1.0/24 LAN).",
                 level="ERROR",
             )
-        self.stale_minutes   = int(prefs.get("stale_minutes",       10))
+        self.stale_minutes   = self._pref_int(prefs, "stale_minutes",  10)
         self.shelly_user     = (_SECRETS_SHELLY_USER or prefs.get("shelly_username", "")).strip()
         self.shelly_pass     = (_SECRETS_SHELLY_PASS or prefs.get("shelly_password", "")).strip()
         self.firmware_notify = prefs.get("firmware_notify_enabled", False)
@@ -276,7 +292,7 @@ class Plugin(indigo.PluginBase):
         self.last_webhook_check   = 0.0  # timestamp of last webhook health check
         self.last_firmware_check  = 0.0  # timestamp of last firmware notify check
 
-        log_level = int(prefs.get("logLevel", logging.INFO))
+        log_level = self._pref_int(prefs, "logLevel", logging.INFO)
         self.indigo_log_handler.setLevel(log_level)
         self._load_energy_data()
 
@@ -290,6 +306,7 @@ class Plugin(indigo.PluginBase):
         self._save_energy_data()
         if self.webhook_server:
             self.webhook_server.shutdown()
+            self.webhook_server.server_close()   # release the listening socket FD
 
     # ---------------------------------------------------------------------------
     # Device lifecycle
@@ -351,15 +368,15 @@ class Plugin(indigo.PluginBase):
 
     def closedPrefsConfigUi(self, values_dict, user_cancelled):
         if not user_cancelled:
-            self.timeout         = int(values_dict.get("timeout_secs",        3))
+            self.timeout         = self._pref_int(values_dict, "timeout_secs", 3)
             self.server_ip       = _SECRETS_INDIGO_IP or values_dict.get("indigo_server_ip", "")
-            self.subnets_raw     = values_dict.get("discovery_subnets",       "192.168.4")
+            self.subnets_raw     = values_dict.get("discovery_subnets",       "")
             self.subnets         = [s.strip() for s in self.subnets_raw.split(",") if s.strip()]
-            self.stale_minutes   = int(values_dict.get("stale_minutes",       10))
+            self.stale_minutes   = self._pref_int(values_dict, "stale_minutes", 10)
             self.shelly_user     = values_dict.get("shelly_username",        "").strip()
             self.shelly_pass     = values_dict.get("shelly_password",        "").strip()
             self.firmware_notify = values_dict.get("firmware_notify_enabled", False)
-            self.indigo_log_handler.setLevel(int(values_dict.get("logLevel", logging.INFO)))
+            self.indigo_log_handler.setLevel(self._pref_int(values_dict, "logLevel", logging.INFO))
 
     def validateDeviceConfigUi(self, values_dict, type_id, dev_id):
         errors = indigo.Dict()
@@ -658,7 +675,10 @@ class Plugin(indigo.PluginBase):
             while True:
                 today_str = str(date.today())
                 if today_str != self.last_date:
-                    self._midnight_reset(today_str)
+                    try:
+                        self._midnight_reset(today_str)
+                    except Exception as exc:
+                        log(f"Midnight reset error: {exc}", level="ERROR")
                     self.last_date = today_str
 
                 now = time.time()
@@ -678,24 +698,27 @@ class Plugin(indigo.PluginBase):
                     ).start()
 
                 for dev in indigo.devices.iter("self"):
-                    if not dev.enabled or not dev.configured:
-                        continue
-                    # BLU devices are event-driven via gateway webhooks — no polling or
-                    # stale-check possible (they sleep between button presses)
-                    if dev.deviceTypeId in BLU_TYPES:
-                        continue
-                    if dev.deviceTypeId in PUSH_ONLY_TYPES:
+                    # Whole per-device body guarded: one bad device (config fault,
+                    # transient API error in _check_online, etc.) must never escape
+                    # to the while-body and kill the entire polling thread.
+                    try:
+                        if not dev.enabled or not dev.configured:
+                            continue
+                        # BLU devices are event-driven via gateway webhooks — no polling or
+                        # stale-check possible (they sleep between button presses)
+                        if dev.deviceTypeId in BLU_TYPES:
+                            continue
+                        if dev.deviceTypeId in PUSH_ONLY_TYPES:
+                            self._check_online(dev, now)
+                            continue
+
                         self._check_online(dev, now)
-                        continue
 
-                    self._check_online(dev, now)
-
-                    interval = int(dev.pluginProps.get("poll_interval", 30))
-                    if (now - self.last_polled.get(dev.id, 0)) >= interval:
-                        try:
+                        interval = self._pref_int(dev.pluginProps, "poll_interval", 30)
+                        if (now - self.last_polled.get(dev.id, 0)) >= interval:
                             self._poll_device(dev)
-                        except Exception as exc:
-                            log(f'poll exception "{dev.name}": {exc}', level="WARNING")
+                    except Exception as exc:
+                        log(f'poll loop error "{getattr(dev, "name", "?")}": {exc}', level="WARNING")
 
                 self.sleep(10)
         except self.StopThread:
@@ -1293,7 +1316,6 @@ class Plugin(indigo.PluginBase):
                     continue
                 hooks    = resp.json().get("hooks", [])
                 all_urls = [u for h in hooks for u in h.get("urls", [])]
-                base     = f"http://{self.server_ip}:{WEBHOOK_PORT}/shellyEvent?devId={dev.id}"
                 # Check at least one webhook for this device exists
                 if not any(f"devId={dev.id}" in u for u in all_urls):
                     log(f'[{dev.name}] Webhooks missing - repairing ...')
@@ -1436,9 +1458,6 @@ class Plugin(indigo.PluginBase):
                 voltage  = float(data.get("voltage", 0.0))
                 current  = float(data.get("current", 0.0))
                 temp_c   = float((data.get("temperature") or {}).get("tC", 0.0))
-                total_wh = float((data.get("aenergy")     or {}).get("total", 0.0))
-
-                today_kwh, month_kwh        = self._calc_energy(dev.id, total_wh)
 
                 kv += [
                     {"key": "powerWatts",        "value": watts,
@@ -1449,15 +1468,25 @@ class Plugin(indigo.PluginBase):
                      "uiValue": f"{current:.3f} A"},
                     {"key": "deviceTempC",      "value": temp_c,
                      "uiValue": f"{temp_c:.1f} C"},
-                    {"key": "energyKwhToday",   "value": round(today_kwh, 4),
-                     "uiValue": f"{today_kwh:.3f} kWh"},
-                    {"key": "energyKwhMonth",   "value": round(month_kwh, 4),
-                     "uiValue": f"{month_kwh:.3f} kWh"},
                 ]
-                mirror.update({
-                    "watts":     f"{watts:.1f}",
-                    "kwh_today": f"{today_kwh:.4f}",
-                })
+                mirror["watts"] = f"{watts:.1f}"
+
+                # Energy is cumulative — only update from a REAL reading. A missing
+                # aenergy.total (partial response, mid-reboot) must not fabricate a 0,
+                # which would zero the baseline and corrupt today/month kWh.
+                total_wh = self._get_total_wh(data.get("aenergy") or {}, "total")
+                if total_wh is not None:
+                    today_kwh, month_kwh = self._calc_energy(dev.id, total_wh)
+                    kv += [
+                        {"key": "energyKwhToday",   "value": round(today_kwh, 4),
+                         "uiValue": f"{today_kwh:.3f} kWh"},
+                        {"key": "energyKwhMonth",   "value": round(month_kwh, 4),
+                         "uiValue": f"{month_kwh:.3f} kWh"},
+                    ]
+                    mirror["kwh_today"] = f"{today_kwh:.4f}"
+                else:
+                    self.logger.debug(f'[{dev.name}] no aenergy.total this poll — energy preserved')
+
                 self._check_power_alert(dev, watts)
 
             if addon_temp:
@@ -1482,6 +1511,7 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             log(f'[{dev.name}] poll error: {exc}', level="WARNING")
+            self._poll_failed(dev, f"poll error: {exc}")
 
     def _poll_uni(self, dev):
         ip = dev.pluginProps.get("ip_address", "").strip()
@@ -1527,6 +1557,7 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             log(f'[{dev.name}] Uni poll error: {exc}', level="WARNING")
+            self._poll_failed(dev, f"Uni poll error: {exc}")
 
     def _poll_cover(self, dev):
         ip = dev.pluginProps.get("ip_address", "").strip()
@@ -1582,6 +1613,7 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             log(f'[{dev.name}] cover poll error: {exc}', level="WARNING")
+            self._poll_failed(dev, f"cover poll error: {exc}")
 
     def _poll_dimmer(self, dev):
         ip     = dev.pluginProps.get("ip_address", "").strip()
@@ -1621,6 +1653,7 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             log(f'[{dev.name}] dimmer poll error: {exc}', level="WARNING")
+            self._poll_failed(dev, f"dimmer poll error: {exc}")
 
     def _poll_i4(self, dev):
         ip = dev.pluginProps.get("ip_address", "").strip()
@@ -1648,6 +1681,7 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             log(f'[{dev.name}] i4 poll error: {exc}', level="WARNING")
+            self._poll_failed(dev, f"i4 poll error: {exc}")
 
     def _poll_em(self, dev):
         ip        = dev.pluginProps.get("ip_address", "").strip()
@@ -1677,17 +1711,15 @@ class Plugin(indigo.PluginBase):
                 vb  = ib = pb = vc = ic = pc = 0.0
                 tot = pa
 
-            total_wh = 0.0
             emdata   = {}
+            total_wh = None
             try:
                 er = self._rget(f"http://{ip}/rpc/EMData.GetStatus?id=0")
                 if er.status_code == 200:
                     emdata   = er.json() or {}
-                    total_wh = float(emdata.get("total_act_energy", 0.0))
+                    total_wh = self._get_total_wh(emdata, "total_act_energy")
             except Exception:
                 pass
-
-            today_kwh, month_kwh       = self._calc_energy(dev.id, total_wh)
 
             kv = [
                 {"key": "sensorValue",       "value": round(tot, 1), "uiValue": f"{tot:.1f} W"},
@@ -1700,16 +1732,25 @@ class Plugin(indigo.PluginBase):
                 {"key": "voltageC",         "value": vc,  "uiValue": f"{vc:.1f} V"},
                 {"key": "currentC",         "value": ic,  "uiValue": f"{ic:.3f} A"},
                 {"key": "powerC",           "value": pc,  "uiValue": f"{pc:.1f} W"},
-                {"key": "energyKwhToday",  "value": round(today_kwh, 4),
-                 "uiValue": f"{today_kwh:.3f} kWh"},
-                {"key": "energyKwhMonth",  "value": round(month_kwh, 4),
-                 "uiValue": f"{month_kwh:.3f} kWh"},
             ]
+            mirror = {"watts": f"{tot:.1f}"}
+
+            # Energy is cumulative — skip on a missing/failed EMData read rather than
+            # fabricating a 0 that would zero the baseline (phantom kWh spike).
+            if total_wh is not None:
+                today_kwh, month_kwh = self._calc_energy(dev.id, total_wh)
+                kv += [
+                    {"key": "energyKwhToday",  "value": round(today_kwh, 4),
+                     "uiValue": f"{today_kwh:.3f} kWh"},
+                    {"key": "energyKwhMonth",  "value": round(month_kwh, 4),
+                     "uiValue": f"{month_kwh:.3f} kWh"},
+                ]
+                mirror["kwh_today"] = f"{today_kwh:.4f}"
+            else:
+                self.logger.debug(f'[{dev.name}] no EMData total_act_energy this poll — energy preserved')
+
             dev.updateStatesOnServer(kv)
-            self._mirror_states(dev, {
-                "watts":     f"{tot:.1f}",
-                "kwh_today": f"{today_kwh:.4f}",
-            })
+            self._mirror_states(dev, mirror)
             self._capture_unhandled_fields(dev, data)
             if emdata:
                 self._capture_unhandled_fields(
@@ -1725,6 +1766,7 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             log(f'[{dev.name}] EM poll error: {exc}', level="WARNING")
+            self._poll_failed(dev, f"EM poll error: {exc}")
 
     def _poll_rgbw(self, dev):
         ip = dev.pluginProps.get("ip_address", "").strip()
@@ -1769,10 +1811,42 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"timed out ({ip})")
         except Exception as exc:
             log(f'[{dev.name}] RGBW poll error: {exc}', level="WARNING")
+            self._poll_failed(dev, f"RGBW poll error: {exc}")
 
     # ---------------------------------------------------------------------------
     # RPC helpers
     # ---------------------------------------------------------------------------
+
+    @staticmethod
+    def _pref_int(prefs, key, default):
+        """Coerce a pref/prop value to int, falling back (coerced) on blank/non-numeric.
+
+        Config menu fields can't be blanked through the GUI, but a hand-edited
+        .indiPref/.indiDev or a future field-type change can yield '' or a string;
+        int('') raises ValueError on the hot path. Guard once, reuse everywhere.
+        """
+        try:
+            return int(prefs.get(key, default))
+        except (ValueError, TypeError):
+            return int(default)
+
+    @staticmethod
+    def _get_total_wh(container, key):
+        """Return cumulative Wh from an RPC sub-object, or None if the field is absent.
+
+        A None result means 'no reading this poll' — callers MUST NOT treat it as 0.
+        A phantom 0 is below the running baseline and would trip _calc_energy's
+        counter-reset rule, zeroing the baseline and corrupting today/month kWh.
+        """
+        if not isinstance(container, dict):
+            return None
+        raw = container.get(key)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (ValueError, TypeError):
+            return None
 
     def _rget(self, url, params=None, timeout=None):
         """Wrapper around requests.get() with optional digest auth support."""
@@ -2042,7 +2116,7 @@ class Plugin(indigo.PluginBase):
         try:
             path = self._energy_data_path()
             if os.path.exists(path):
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     self.energy_data = json.load(f)
                 self.logger.debug(f"Energy data loaded ({len(self.energy_data)} device(s))")
         except Exception as exc:
@@ -2051,7 +2125,7 @@ class Plugin(indigo.PluginBase):
 
     def _save_energy_data(self):
         try:
-            with open(self._energy_data_path(), "w") as f:
+            with open(self._energy_data_path(), "w", encoding="utf-8") as f:
                 json.dump(self.energy_data, f, indent=2)
         except Exception as exc:
             log(f"Could not save energy data: {exc}", level="WARNING")
@@ -2090,13 +2164,20 @@ class Plugin(indigo.PluginBase):
             try:
                 if dev.deviceTypeId == "shellyEM":
                     er = self._rget(f"http://{ip}/rpc/EMData.GetStatus?id=0")
-                    total_wh = float((er.json() or {}).get("total_act_energy", 0.0)) \
-                               if er.status_code == 200 else 0.0
+                    total_wh = self._get_total_wh(er.json() or {}, "total_act_energy") \
+                               if er.status_code == 200 else None
                 else:
-                    chan = int(dev.pluginProps.get("channel_id", 0))
+                    chan = self._pref_int(dev.pluginProps, "channel_id", 0)
                     sr   = self._rget(f"http://{ip}/rpc/Switch.GetStatus?id={chan}")
-                    total_wh = float((sr.json().get("aenergy") or {}).get("total", 0.0)) \
-                               if sr.status_code == 200 else 0.0
+                    total_wh = self._get_total_wh((sr.json() or {}).get("aenergy") or {}, "total") \
+                               if sr.status_code == 200 else None
+
+                # No real reading at the boundary (timeout, non-200, missing field)?
+                # Leave the baseline untouched and skip — fabricating a 0 here would
+                # append a bogus history row and zero the baseline (phantom spike).
+                if total_wh is None:
+                    log(f'[{dev.name}] Midnight: no energy reading — baseline left unchanged', level="WARNING")
+                    continue
 
                 key   = str(dev.id)
                 entry = self.energy_data.get(key, {})

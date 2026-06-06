@@ -620,6 +620,93 @@ class TestAppInfoCoverage(unittest.TestCase):
 
 
 # ===========================================================================
+# v3.6 regression tests — call the REAL Plugin methods (not isolated copies),
+# so a future signature/logic change is caught instead of silently drifting.
+# ===========================================================================
+
+class TestPrefInt(unittest.TestCase):
+    """Plugin._pref_int — guarded coercion of a pref/prop value (real staticmethod)."""
+
+    def test_valid_string(self):
+        self.assertEqual(_module.Plugin._pref_int({"x": "30"}, "x", 10), 30)
+
+    def test_int_passthrough(self):
+        self.assertEqual(_module.Plugin._pref_int({"x": 5}, "x", 10), 5)
+
+    def test_blank_falls_back(self):
+        self.assertEqual(_module.Plugin._pref_int({"x": ""}, "x", 10), 10)
+
+    def test_missing_key_falls_back(self):
+        self.assertEqual(_module.Plugin._pref_int({}, "x", 10), 10)
+
+    def test_garbage_falls_back(self):
+        self.assertEqual(_module.Plugin._pref_int({"x": "abc"}, "x", 10), 10)
+
+    def test_none_falls_back(self):
+        self.assertEqual(_module.Plugin._pref_int({"x": None}, "x", 10), 10)
+
+
+class TestGetTotalWh(unittest.TestCase):
+    """Plugin._get_total_wh — present->float, absent/bad->None (phantom-zero guard)."""
+
+    def test_present_value(self):
+        self.assertEqual(_module.Plugin._get_total_wh({"total": 1234.5}, "total"), 1234.5)
+
+    def test_genuine_zero_is_a_real_reading(self):
+        # A genuine 0 (fresh/reset meter) IS a value, not 'absent'.
+        self.assertEqual(_module.Plugin._get_total_wh({"total": 0}, "total"), 0.0)
+
+    def test_missing_key_is_none(self):
+        self.assertIsNone(_module.Plugin._get_total_wh({}, "total"))
+
+    def test_none_value_is_none(self):
+        self.assertIsNone(_module.Plugin._get_total_wh({"total": None}, "total"))
+
+    def test_non_dict_is_none(self):
+        self.assertIsNone(_module.Plugin._get_total_wh(None, "total"))
+
+    def test_non_numeric_is_none(self):
+        self.assertIsNone(_module.Plugin._get_total_wh({"total": "n/a"}, "total"))
+
+
+class TestCalcEnergyPhantomZero(unittest.TestCase):
+    """Real Plugin._calc_energy plus the call-site phantom-zero guard."""
+
+    @staticmethod
+    def _stub():
+        s = types.SimpleNamespace()
+        s.energy_data = {}
+        return s
+
+    def test_baseline_and_accumulation(self):
+        s = self._stub()
+        today, _month = _module.Plugin._calc_energy(s, 1, 1000.0)
+        self.assertEqual(today, 0.0)                      # first reading -> baseline
+        today, _month = _module.Plugin._calc_energy(s, 1, 1500.0)
+        self.assertAlmostEqual(today, 0.5)               # +500 Wh -> 0.5 kWh
+
+    def test_genuine_meter_reset_rebaselines(self):
+        s = self._stub()
+        _module.Plugin._calc_energy(s, 1, 5000.0)
+        today, _month = _module.Plugin._calc_energy(s, 1, 10.0)   # power-cycled
+        self.assertEqual(today, 0.0)
+        self.assertEqual(s.energy_data["1"]["day_baseline_wh"], 10.0)
+
+    def test_phantom_zero_is_filtered_before_calc(self):
+        # The v3.6 fix: a poll missing the cumulative field yields None from
+        # _get_total_wh, so the poll path skips _calc_energy and the baseline
+        # is preserved (no phantom multi-thousand-kWh spike next poll).
+        s = self._stub()
+        _module.Plugin._calc_energy(s, 1, 5000.0)
+        baseline_before = s.energy_data["1"]["day_baseline_wh"]
+        total = _module.Plugin._get_total_wh({"voltage": 240.0}, "total")  # no 'total' key
+        self.assertIsNone(total)
+        if total is not None:                            # mirrors the guard in _poll_*
+            _module.Plugin._calc_energy(s, 1, total)
+        self.assertEqual(s.energy_data["1"]["day_baseline_wh"], baseline_before)
+
+
+# ===========================================================================
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
