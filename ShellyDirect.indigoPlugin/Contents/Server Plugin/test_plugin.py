@@ -8,6 +8,7 @@
 
 import re
 import sys
+import threading
 import types
 import unittest
 from unittest.mock import MagicMock, patch, call
@@ -675,7 +676,8 @@ class TestCalcEnergyPhantomZero(unittest.TestCase):
     @staticmethod
     def _stub():
         s = types.SimpleNamespace()
-        s.energy_data = {}
+        s.energy_data  = {}
+        s._energy_lock = threading.RLock()   # _calc_energy guards energy_data with this
         return s
 
     def test_baseline_and_accumulation(self):

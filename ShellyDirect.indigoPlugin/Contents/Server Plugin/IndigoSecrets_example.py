@@ -175,3 +175,20 @@ INFLUXDB_PORT     = 8086
 INFLUXDB_USERNAME = ""
 INFLUXDB_PASSWORD = ""
 INFLUXDB_DATABASE = ""
+
+# ============================
+# ShellyDirect plugin (optional — all have a PluginConfig fallback)
+# Required by: ShellyDirect plugin (com.clives.indigoplugin.shellydirect)
+# INDIGO_SERVER_IP         - IP the Shelly devices use to reach Indigo for webhook
+#                            callbacks (the plugin's listener on port 8178). Shared
+#                            with any other plugin that needs the server's own IP.
+# SHELLY_USERNAME/PASSWORD - HTTP Digest Auth credentials, only if your Shellys have
+#                            authentication enabled. All devices must share one set.
+# SHELLY_DISCOVERY_SUBNETS - first three octets only, comma-separated for multiple
+#                            LANs, e.g. "192.168.1" or "192.168.1, 10.0.1". Discovery
+#                            scans .1-.254 on each. No default — set here or in Configure.
+# ============================
+INDIGO_SERVER_IP         = ""        # e.g. 192.168.x.x
+SHELLY_USERNAME          = ""
+SHELLY_PASSWORD          = ""
+SHELLY_DISCOVERY_SUBNETS = ""        # e.g. "192.168.1" or "192.168.1, 192.168.10"

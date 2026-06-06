@@ -5,7 +5,23 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 4.8
 # Date:        06-06-2026
-# Version:     3.6
+# Version:     3.7
+#
+# v3.7 (06-06-2026) — deep-review batch 2 (sensible mediums):
+# - energy_data now guarded by a reentrant lock (RLock): _calc_energy,
+#   _midnight_reset and _save_energy_data no longer race the poll loop vs
+#   action-triggered polls.
+# - Midnight reset idempotent across a restart spanning midnight: last_date is
+#   persisted to pluginPrefs["lastEnergyDate"] and read back on startup, so the
+#   daily reset still fires on the first tick instead of being silently skipped.
+# - Webhook do_POST: Content-Length coercion guarded + 64 KB body cap (the
+#   unauthenticated LAN listener can't be made to allocate an unbounded buffer).
+# - High Power Alert event selector (getPMDevices) now lists only shellyRelay PM
+#   devices — the only type whose poll evaluates the threshold (was offering
+#   dimmer/RGBW PM devices whose trigger could never fire).
+# - Bundled IndigoSecrets_example.py now documents the ShellyDirect keys
+#   (INDIGO_SERVER_IP, SHELLY_USERNAME/PASSWORD, SHELLY_DISCOVERY_SUBNETS),
+#   matching the master template.
 #
 # v3.6 (06-06-2026) — deep-review batch 1 (HIGH + robustness):
 # - Energy phantom-zero FIX: a successful poll missing aenergy.total /
@@ -285,7 +301,11 @@ class Plugin(indigo.PluginBase):
         self.fail_count           = {}   # {dev_id: int}  consecutive poll failures
         self.webhook_server       = None
         self.energy_data          = {}   # {str(dev_id): {...baselines + history...}}
-        self.last_date            = str(date.today())
+        self._energy_lock         = threading.RLock()  # guards energy_data RMW across threads
+        # last_date persisted across restarts so a restart spanning midnight still
+        # triggers the daily reset on the first tick (network available), instead of
+        # silently skipping it because __init__ seeded today.
+        self.last_date            = prefs.get("lastEnergyDate") or str(date.today())
         self.power_alert_active   = {}   # {dev_id: bool}
         self.triggers             = []   # active Indigo trigger objects
         self.var_folder_id        = None # lazy-created ShellyDirect variable folder
@@ -680,6 +700,7 @@ class Plugin(indigo.PluginBase):
                     except Exception as exc:
                         log(f"Midnight reset error: {exc}", level="ERROR")
                     self.last_date = today_str
+                    self.pluginPrefs["lastEnergyDate"] = today_str   # survive a restart
 
                 now = time.time()
 
@@ -1007,11 +1028,19 @@ class Plugin(indigo.PluginBase):
                     if not dev_id:
                         self.send_response(400); self.end_headers(); return
 
-                    length  = int(self.headers.get("Content-Length", 0))
+                    try:
+                        length = int(self.headers.get("Content-Length", 0))
+                    except (ValueError, TypeError):
+                        length = 0
+                    # BLU event payloads are tiny — cap the read so a malformed or
+                    # hostile Content-Length on this unauthenticated LAN listener
+                    # can't make us allocate an unbounded buffer.
+                    if length < 0 or length > 65536:
+                        self.send_response(413); self.end_headers(); return
                     body    = self.rfile.read(length) if length else b"{}"
                     try:
                         payload = json.loads(body)
-                    except json.JSONDecodeError:
+                    except (json.JSONDecodeError, ValueError):
                         payload = {}
 
                     try:
@@ -2125,8 +2154,10 @@ class Plugin(indigo.PluginBase):
 
     def _save_energy_data(self):
         try:
+            with self._energy_lock:
+                snapshot = json.dumps(self.energy_data, indent=2)
             with open(self._energy_data_path(), "w", encoding="utf-8") as f:
-                json.dump(self.energy_data, f, indent=2)
+                f.write(snapshot)
         except Exception as exc:
             log(f"Could not save energy data: {exc}", level="WARNING")
 
@@ -2134,19 +2165,20 @@ class Plugin(indigo.PluginBase):
         key       = str(dev_id)
         today_str = str(date.today())
         month_str = today_str[:7]
-        entry     = self.energy_data.get(key, {})
+        with self._energy_lock:
+            entry = self.energy_data.get(key, {})
 
-        if "day_baseline_wh" not in entry or total_wh < entry.get("day_baseline_wh", 0):
-            entry["day_baseline_wh"] = total_wh
-            entry["day_date"]        = today_str
+            if "day_baseline_wh" not in entry or total_wh < entry.get("day_baseline_wh", 0):
+                entry["day_baseline_wh"] = total_wh
+                entry["day_date"]        = today_str
 
-        if "month_baseline_wh" not in entry or total_wh < entry.get("month_baseline_wh", 0):
-            entry["month_baseline_wh"] = total_wh
-            entry["month_date"]        = month_str
+            if "month_baseline_wh" not in entry or total_wh < entry.get("month_baseline_wh", 0):
+                entry["month_baseline_wh"] = total_wh
+                entry["month_date"]        = month_str
 
-        self.energy_data[key] = entry
-        today_kwh = max(0.0, (total_wh - entry["day_baseline_wh"])   / 1000.0)
-        month_kwh = max(0.0, (total_wh - entry["month_baseline_wh"]) / 1000.0)
+            self.energy_data[key] = entry
+            today_kwh = max(0.0, (total_wh - entry["day_baseline_wh"])   / 1000.0)
+            month_kwh = max(0.0, (total_wh - entry["month_baseline_wh"]) / 1000.0)
         return today_kwh, month_kwh
 
     def _midnight_reset(self, today_str):
@@ -2179,27 +2211,28 @@ class Plugin(indigo.PluginBase):
                     log(f'[{dev.name}] Midnight: no energy reading — baseline left unchanged', level="WARNING")
                     continue
 
-                key   = str(dev.id)
-                entry = self.energy_data.get(key, {})
+                key = str(dev.id)
+                with self._energy_lock:
+                    entry = self.energy_data.get(key, {})
 
-                # Append yesterday's total to rolling history before resetting
-                yesterday_kwh = max(0.0, (total_wh - entry.get("day_baseline_wh", total_wh)) / 1000.0)
-                if "history" not in entry:
-                    entry["history"] = []
-                entry["history"].append({
-                    "date": entry.get("day_date", ""),
-                    "kwh":  round(yesterday_kwh, 4),
-                })
-                # Keep only the last HISTORY_DAYS entries
-                entry["history"] = entry["history"][-HISTORY_DAYS:]
+                    # Append yesterday's total to rolling history before resetting
+                    yesterday_kwh = max(0.0, (total_wh - entry.get("day_baseline_wh", total_wh)) / 1000.0)
+                    if "history" not in entry:
+                        entry["history"] = []
+                    entry["history"].append({
+                        "date": entry.get("day_date", ""),
+                        "kwh":  round(yesterday_kwh, 4),
+                    })
+                    # Keep only the last HISTORY_DAYS entries
+                    entry["history"] = entry["history"][-HISTORY_DAYS:]
 
-                entry["day_baseline_wh"] = total_wh
-                entry["day_date"]        = today_str
-                if entry.get("month_date") != month_str:
-                    entry["month_baseline_wh"] = total_wh
-                    entry["month_date"]        = month_str
-                    log(f'[{dev.name}] Monthly baseline reset for {month_str}')
-                self.energy_data[key] = entry
+                    entry["day_baseline_wh"] = total_wh
+                    entry["day_date"]        = today_str
+                    if entry.get("month_date") != month_str:
+                        entry["month_baseline_wh"] = total_wh
+                        entry["month_date"]        = month_str
+                        log(f'[{dev.name}] Monthly baseline reset for {month_str}')
+                    self.energy_data[key] = entry
 
             except Exception as exc:
                 log(f'[{dev.name}] Midnight reset failed: {exc}', level="WARNING")
@@ -2344,10 +2377,16 @@ class Plugin(indigo.PluginBase):
         return result
 
     def getPMDevices(self, filter="", valuesDict=None, typeId="", targetId=0):
-        """Dynamic list of devices with power monitoring."""
+        """Dynamic list of devices that can fire the High Power Alert.
+
+        Only shellyRelay (with PM) evaluates the threshold — _check_power_alert is
+        called solely from _poll_relay, and the power_alert_* config fields exist
+        only on the relay device type. Offering dimmer/RGBW PM devices here would
+        list options whose trigger can never fire.
+        """
         result = [("any", "Any Device")]
         for dev in sorted(indigo.devices.iter("self"), key=lambda d: d.name):
-            if dev.pluginProps.get("has_pm", False):
+            if dev.deviceTypeId == "shellyRelay" and dev.pluginProps.get("has_pm", False):
                 result.append((str(dev.id), dev.name))
         return result
 
