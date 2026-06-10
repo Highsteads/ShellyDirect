@@ -11,7 +11,7 @@ import sys
 import threading
 import types
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
 # Minimal Indigo mock — must be in place before importing plugin.py

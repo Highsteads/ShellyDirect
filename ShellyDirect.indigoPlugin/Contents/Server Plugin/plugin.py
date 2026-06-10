@@ -4,8 +4,8 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 4.8
-# Date:        06-06-2026
-# Version:     3.7
+# Date:        10-06-2026
+# Version:     3.8
 #
 # v3.7 (06-06-2026) — deep-review batch 2 (sensible mediums):
 # - energy_data now guarded by a reentrant lock (RLock): _calc_energy,
@@ -97,7 +97,6 @@ import indigo
 import json
 import logging
 import os
-import platform
 import re
 import socketserver
 import sys as _sys
@@ -2264,7 +2263,7 @@ class Plugin(indigo.PluginBase):
         # Variable names must not have spaces or special chars (CLAUDE.md rule)
         safe_name = re.sub(r"[^A-Za-z0-9_]", "_", name)
         try:
-            var = indigo.variables[safe_name]
+            indigo.variables[safe_name]   # existence check — KeyError means create
             indigo.variable.updateValue(safe_name, str(value))
         except KeyError:
             indigo.variable.create(safe_name, value=str(value), folder=folder_id)

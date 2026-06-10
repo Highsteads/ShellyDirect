@@ -17,3 +17,6 @@ Contents/Server Plugin/IndigoSecrets.py
 # Personal/local files
 CLAUDE.md
 *.pdf
+
+# Test runner artefacts
+.pytest_cache/
