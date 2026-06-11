@@ -268,8 +268,8 @@ The setting is stored in `pluginPrefs` (`timestampEnabled`) and persists across 
 - **Energy figures look wrong after a power cut** — the plugin re-baselines automatically on the next good reading. A single missing reading no longer causes a spike (v3.6).
 - **For a support post**, run **Show Plugin Info** and paste the banner along with the relevant log lines.
 
----
+## Authors & licence
 
-## Licence
+Vibed into existence by **CliveS**, who knew what he wanted, argued until he got it, and tested it on a real house. Typed at inhuman speed by **Claude** (Anthropic), who mostly did as it was told.
 
-MIT — see [LICENSE](LICENSE). Contributions and bug reports are welcome on the [Highsteads/ShellyDirect](https://github.com/Highsteads/ShellyDirect) repository.
+© 2026 CliveS · [MIT licence](LICENSE) — copy it, fork it, bend it, break it, fix it, ship it. If it breaks, you get to keep both pieces.
