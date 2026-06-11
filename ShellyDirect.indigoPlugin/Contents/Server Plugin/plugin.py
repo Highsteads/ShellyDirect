@@ -69,7 +69,7 @@
 #   TRIGGERS AND CONTROL PAGES REFERENCING THE OLD STATE NAMES WILL NEED TO
 #   BE UPDATED. State history on existing Indigo devices is lost.
 # - Indigo server IP moved to IndigoSecrets.INDIGO_SERVER_IP with PluginConfig
-#   fallback. Hardcoded "192.168.100.160" removed from plugin.py (2 places)
+#   fallback. The hardcoded server IP removed from plugin.py (2 places)
 #   and PluginConfig.xml defaultValue. ERROR-log if neither source resolves.
 #
 # v2.7 (10-05-2026):
@@ -406,7 +406,7 @@ class Plugin(indigo.PluginBase):
         else:
             parts = ip.split(".")
             if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
-                errors["ip_address"] = "Please enter a valid IPv4 address (e.g. 192.168.4.10)."
+                errors["ip_address"] = "Please enter a valid IPv4 address (e.g. 192.168.1.10)."
         if type_id in BLU_TYPES:
             bthome_id = values_dict.get("bthome_id", "").strip()
             if not bthome_id:

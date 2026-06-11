@@ -272,7 +272,7 @@ class TestSubnetValidation(unittest.TestCase):
         self.assertIn("discovery_subnets", errs)
 
     def test_full_ip_fails(self):
-        errs = _validate_subnet("192.168.4.1")
+        errs = _validate_subnet("192.168.1.1")
         self.assertIn("discovery_subnets", errs)
 
     def test_non_numeric_fails(self):
@@ -298,7 +298,7 @@ class TestSubnetValidation(unittest.TestCase):
 class TestIPValidation(unittest.TestCase):
 
     def test_valid_ip(self):
-        self.assertEqual(_validate_ip("192.168.4.10"), {})
+        self.assertEqual(_validate_ip("192.168.1.10"), {})
 
     def test_empty_fails(self):
         self.assertIn("ip_address", _validate_ip(""))
@@ -307,10 +307,10 @@ class TestIPValidation(unittest.TestCase):
         self.assertIn("ip_address", _validate_ip("192.168.4"))
 
     def test_non_numeric_fails(self):
-        self.assertIn("ip_address", _validate_ip("192.168.4.x"))
+        self.assertIn("ip_address", _validate_ip("192.168.1.x"))
 
     def test_out_of_range_fails(self):
-        self.assertIn("ip_address", _validate_ip("192.168.4.256"))
+        self.assertIn("ip_address", _validate_ip("192.168.1.256"))
 
     def test_zero_address_valid(self):
         self.assertEqual(_validate_ip("0.0.0.0"), {})
@@ -531,29 +531,29 @@ class TestFireTrigger(unittest.TestCase):
 class TestStaleWebhookDetection(unittest.TestCase):
 
     def test_wanted_url_not_stale(self):
-        url     = "http://192.168.100.160:8178/shellyEvent?devId=100&type=switch&state=on"
+        url     = "http://192.168.1.20:8178/shellyEvent?devId=100&type=switch&state=on"
         wanted  = {url}
         self.assertFalse(_is_stale_webhook_url(url, wanted))
 
     def test_old_device_id_is_stale(self):
-        old_url = "http://192.168.100.160:8178/shellyEvent?devId=9999&type=switch&state=on"
-        new_url = "http://192.168.100.160:8178/shellyEvent?devId=100&type=switch&state=on"
+        old_url = "http://192.168.1.20:8178/shellyEvent?devId=9999&type=switch&state=on"
+        new_url = "http://192.168.1.20:8178/shellyEvent?devId=100&type=switch&state=on"
         wanted  = {new_url}
         self.assertTrue(_is_stale_webhook_url(old_url, wanted))
 
     def test_non_plugin_url_not_stale(self):
-        url    = "http://192.168.100.160:8080/other_endpoint?foo=bar"
+        url    = "http://192.168.1.20:8080/other_endpoint?foo=bar"
         wanted = set()
         self.assertFalse(_is_stale_webhook_url(url, wanted))
 
     def test_old_server_ip_is_stale(self):
-        old_url = "http://192.168.100.50:8178/shellyEvent?devId=100&type=switch&state=on"
-        new_url = "http://192.168.100.160:8178/shellyEvent?devId=100&type=switch&state=on"
+        old_url = "http://192.168.1.50:8178/shellyEvent?devId=100&type=switch&state=on"
+        new_url = "http://192.168.1.20:8178/shellyEvent?devId=100&type=switch&state=on"
         wanted  = {new_url}
         self.assertTrue(_is_stale_webhook_url(old_url, wanted))
 
     def test_empty_wanted_any_plugin_url_is_stale(self):
-        url    = "http://192.168.100.160:8178/shellyEvent?devId=42&type=button&event=single"
+        url    = "http://192.168.1.20:8178/shellyEvent?devId=42&type=button&event=single"
         self.assertTrue(_is_stale_webhook_url(url, set()))
 
 

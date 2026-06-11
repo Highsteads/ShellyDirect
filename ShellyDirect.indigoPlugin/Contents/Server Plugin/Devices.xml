@@ -14,7 +14,7 @@
 				<Label>IP Address:</Label>
 			</Field>
 			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
-				<Label>Local IP address of the Shelly device (e.g. 192.168.4.10)</Label>
+				<Label>Local IP address of the Shelly device (e.g. 192.168.1.10)</Label>
 			</Field>
 			<Field id="sep1" type="separator"/>
 			<Field id="channel_id" type="menu" defaultValue="0">
@@ -143,7 +143,7 @@
 				<Label>IP Address:</Label>
 			</Field>
 			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
-				<Label>Local IP address of the Shelly Plus Uni (e.g. 192.168.4.20)</Label>
+				<Label>Local IP address of the Shelly Plus Uni (e.g. 192.168.1.20)</Label>
 			</Field>
 			<Field id="sep1" type="separator"/>
 			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
@@ -205,7 +205,7 @@
 				<Label>IP Address:</Label>
 			</Field>
 			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
-				<Label>Local IP address of the Shelly device configured in cover mode (e.g. 192.168.4.30)</Label>
+				<Label>Local IP address of the Shelly device configured in cover mode (e.g. 192.168.1.30)</Label>
 			</Field>
 			<Field id="sep1" type="separator"/>
 			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
@@ -275,7 +275,7 @@
 				<Label>IP Address:</Label>
 			</Field>
 			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
-				<Label>Local IP address of the Shelly dimmer (e.g. 192.168.4.40)</Label>
+				<Label>Local IP address of the Shelly dimmer (e.g. 192.168.1.40)</Label>
 			</Field>
 			<Field id="sep1" type="separator"/>
 			<Field id="channel_id" type="menu" defaultValue="0">
@@ -381,7 +381,7 @@
 				<Label>IP Address:</Label>
 			</Field>
 			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
-				<Label>Local IP address of the Shelly Plus i4 (e.g. 192.168.4.50)</Label>
+				<Label>Local IP address of the Shelly Plus i4 (e.g. 192.168.1.50)</Label>
 			</Field>
 			<Field id="sep1" type="separator"/>
 			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
@@ -517,7 +517,7 @@
 				<Label>IP Address:</Label>
 			</Field>
 			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
-				<Label>Local IP address of the Shelly energy meter (e.g. 192.168.4.60)</Label>
+				<Label>Local IP address of the Shelly energy meter (e.g. 192.168.1.60)</Label>
 			</Field>
 			<Field id="sep1" type="separator"/>
 			<Field id="is_3phase" type="checkbox" defaultValue="false">
@@ -625,7 +625,7 @@
 				<Label>Gateway IP Address:</Label>
 			</Field>
 			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
-				<Label>IP address of the Shelly Gen2/3/4 device acting as the BLE gateway (e.g. 192.168.4.10). NOT the button's own IP — BLU buttons have no IP.</Label>
+				<Label>IP address of the Shelly Gen2/3/4 device acting as the BLE gateway (e.g. 192.168.1.10). NOT the button's own IP — BLU buttons have no IP.</Label>
 			</Field>
 			<Field id="sep1" type="separator"/>
 			<Field id="bthome_id" type="textfield" defaultValue="200">
@@ -680,7 +680,7 @@
 				<Label>Gateway IP Address:</Label>
 			</Field>
 			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
-				<Label>IP address of the Shelly Gen2/3/4 device acting as the BLE gateway (e.g. 192.168.4.10). NOT the button's own IP — BLU devices have no IP.</Label>
+				<Label>IP address of the Shelly Gen2/3/4 device acting as the BLE gateway (e.g. 192.168.1.10). NOT the button's own IP — BLU devices have no IP.</Label>
 			</Field>
 			<Field id="sep1" type="separator"/>
 			<Field id="bthome_id" type="textfield" defaultValue="200">
@@ -740,7 +740,7 @@
 				<Label>IP Address:</Label>
 			</Field>
 			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
-				<Label>Local IP address of the Shelly RGBW PM (e.g. 192.168.4.70)</Label>
+				<Label>Local IP address of the Shelly RGBW PM (e.g. 192.168.1.70)</Label>
 			</Field>
 			<Field id="sep1" type="separator"/>
 			<Field id="mirror_to_variable" type="checkbox" defaultValue="false">
