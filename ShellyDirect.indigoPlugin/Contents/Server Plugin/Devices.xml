@@ -347,11 +347,6 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="sensorValue">
-				<ValueType>Float</ValueType>
-				<TriggerLabel>Temperature (C)</TriggerLabel>
-				<ControlPageLabel>Temperature</ControlPageLabel>
-			</State>
 			<State id="humidity">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Humidity (%)</TriggerLabel>
@@ -401,11 +396,6 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="sensorValue">
-				<ValueType>Boolean</ValueType>
-				<TriggerLabel>Input 0 State</TriggerLabel>
-				<ControlPageLabel>Input 0</ControlPageLabel>
-			</State>
 			<State id="input1">
 				<ValueType>Boolean</ValueType>
 				<TriggerLabel>Input 1 State</TriggerLabel>
@@ -447,11 +437,6 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="sensorValue">
-				<ValueType>Boolean</ValueType>
-				<TriggerLabel>Smoke Alarm</TriggerLabel>
-				<ControlPageLabel>Smoke</ControlPageLabel>
-			</State>
 			<State id="batteryPct">
 				<ValueType>Integer</ValueType>
 				<TriggerLabel>Battery (%)</TriggerLabel>
@@ -483,11 +468,6 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="sensorValue">
-				<ValueType>Boolean</ValueType>
-				<TriggerLabel>Flood Detected</TriggerLabel>
-				<ControlPageLabel>Flood</ControlPageLabel>
-			</State>
 			<State id="temperature">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Temperature (C)</TriggerLabel>
@@ -544,11 +524,6 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="sensorValue">
-				<ValueType>Float</ValueType>
-				<TriggerLabel>Total Active Power (W)</TriggerLabel>
-				<ControlPageLabel>Total Power</ControlPageLabel>
-			</State>
 			<State id="voltageA">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Voltage Phase A (V)</TriggerLabel>
@@ -636,11 +611,6 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="sensorValue">
-				<ValueType>Boolean</ValueType>
-				<TriggerLabel>Button Pressed</TriggerLabel>
-				<ControlPageLabel>Pressed</ControlPageLabel>
-			</State>
 			<State id="lastAction">
 				<ValueType>String</ValueType>
 				<TriggerLabel>Last Action</TriggerLabel>
@@ -691,11 +661,6 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="sensorValue">
-				<ValueType>Boolean</ValueType>
-				<TriggerLabel>Button Pressed</TriggerLabel>
-				<ControlPageLabel>Pressed</ControlPageLabel>
-			</State>
 			<State id="lastAction">
 				<ValueType>String</ValueType>
 				<TriggerLabel>Last Action</TriggerLabel>

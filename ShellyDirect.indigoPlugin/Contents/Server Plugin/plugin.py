@@ -5,7 +5,13 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 4.8
 # Date:        13-06-2026
-# Version:     3.9
+# Version:     3.10
+#
+# v3.10 (13-06-2026) — remove redundant native sensorValue state declarations from the
+# seven sensor device types (shellyHT, shellyI4, shellySmoke, shellyFlood, shellyEM,
+# shellyBluButton, shellyBluRC4). Indigo rejected them at startup with "native state keys
+# cannot be overriden (ignoring)"; sensorValue is provided natively for type="sensor"
+# devices, so this is a behaviour-neutral fix that just clears the startup log noise.
 #
 # v3.9 (13-06-2026) — discovery: classify unknown-app devices from components.
 # - Discovery previously fell back to "single relay, no PM" for any device whose
