@@ -4,8 +4,23 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 4.8
-# Date:        10-06-2026
-# Version:     3.8
+# Date:        13-06-2026
+# Version:     3.9
+#
+# v3.9 (13-06-2026) — discovery: classify unknown-app devices from components.
+# - Discovery previously fell back to "single relay, no PM" for any device whose
+#   `app` was not in the curated APP_INFO table — so an unknown/new model that is
+#   really a dimmer/cover/RGBW/multi-channel was created as the wrong Indigo type
+#   (or lost channels). New module-level classifier `detect_shelly_devices(
+#   device_info, config_keys)` reads the live Shelly.GetConfig component set
+#   (switch/light/cover/rgb/em/input) and returns one device spec per channel;
+#   the unknown-app branch of _discover_thread now uses it (known apps still go
+#   straight through the table, no extra RPC). Future-proofs discovery against
+#   new Shelly models. No change for known-app or already-configured devices.
+# - NEW device-zoo test layer (tests/): declarative self-description -> expected
+#   per-channel devices contract + invariants (known-types-only, never-BLU-from-
+#   IP-discovery, distinct channels, deterministic). Real fleet captures in
+#   tests/zoo_real/. Harvested from Simon's indigo-matter "device zoo" method.
 #
 # v3.7 (06-06-2026) — deep-review batch 2 (sensible mediums):
 # - energy_data now guarded by a reentrant lock (RLock): _calc_energy,
@@ -2596,7 +2611,30 @@ class Plugin(indigo.PluginBase):
                 if info:
                     label, has_pm, base_type, num_ch = info
                 else:
-                    label, has_pm, base_type, num_ch = model, False, "shellyRelay", 1
+                    # App not in the curated APP_INFO table — classify from the
+                    # device's live component set (Shelly.GetConfig) instead of
+                    # blindly assuming a single relay. Without this, an unknown
+                    # model that is really a dimmer/cover/RGBW/multi-channel was
+                    # created as the wrong type (or lost channels). detect_shelly_
+                    # devices returns one spec per channel; feed the first spec's
+                    # type + the channel count into the existing creation logic
+                    # below (which already handles num_ch channels + cover mode).
+                    specs = []
+                    try:
+                        cfg = self._rget(f"http://{ip}/rpc/Shelly.GetConfig", timeout=1)
+                        if cfg.status_code == 200:
+                            specs = detect_shelly_devices(data, list(cfg.json().keys()))
+                    except Exception:
+                        specs = []
+                    if specs:
+                        base_type = specs[0]["device_type_id"]
+                        has_pm    = bool(specs[0]["has_pm"])
+                        num_ch    = len(specs)
+                        label     = model
+                        log(f"[Discovery] {ip:<18} app={app or '(none)'} not in table "
+                            f"-- classified from components as {base_type} x{num_ch}")
+                    else:
+                        label, has_pm, base_type, num_ch = model, False, "shellyRelay", 1
 
                 found.append(ip)
 
