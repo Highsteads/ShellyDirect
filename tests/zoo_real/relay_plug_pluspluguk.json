@@ -1,0 +1,19 @@
+{
+  "device_info": {
+    "app": "PlusPlugUK",
+    "model": "SNPL-00112UK",
+    "gen": 2,
+    "profile": null,
+    "auth_en": false
+  },
+  "config_keys": [
+    "ble",
+    "cloud",
+    "mqtt",
+    "pluguk_ui",
+    "switch:0",
+    "sys",
+    "wifi",
+    "ws"
+  ]
+}

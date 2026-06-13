@@ -213,6 +213,84 @@ LIGHT_TYPES     = {"shellyDimmer", "shellyRGBW"}
 # Device types that have physical button inputs
 INPUT_TYPES     = {"shellyRelay", "shellyUni", "shellyI4"}
 
+
+def detect_shelly_devices(device_info, config_keys):
+    """Classify a Shelly Gen2+ device into the Indigo device(s) it maps to —
+    one per channel. Pure function: the testable core a future "Discover &
+    Create Shelly Devices" menu will call after probing each responder.
+
+    Inputs:
+      device_info  — dict from Shelly.GetDeviceInfo (we use ``app``; ``gen``,
+                     ``model`` etc. are available but not required).
+      config_keys  — the component-key list from Shelly.GetConfig /
+                     Shelly.GetComponents, e.g. ['switch:0', 'input:0', 'sys'].
+
+    Returns a list of dicts (one per channel), each:
+      {device_type_id, channel, has_pm, app, source}
+    where source is 'app' (matched the curated APP_INFO table) or 'components'
+    (fallback classification for an app not yet in the table). Empty list = not
+    a recognisable controllable Shelly (discovery would skip it / ask the user).
+
+    Primary path is APP_INFO[app] — authoritative, and carries num_channels +
+    has_pm. The component fallback means a brand-new Shelly model still maps
+    sensibly instead of failing (e.g. the Gen-4 'Mini1G4', not yet in the
+    table, classifies as a single relay from its 'switch:0').
+
+    NB: this is IP/RPC discovery, so it never yields a BLU (Bluetooth) device —
+    those have no IP of their own and are reached via a gateway, so they stay
+    manual. Gen-1 devices have no RPC at all and are out of scope (the separate
+    ShellyGen1 plugin owns them).
+    """
+    info = device_info or {}
+    app  = info.get("app", "") or ""
+    keys = list(config_keys or [])
+
+    # Primary: the curated app -> (label, has_pm, type, channels) table.
+    if app in APP_INFO:
+        _label, has_pm, type_id, n = APP_INFO[app]
+        n = max(1, int(n))
+        return [{"device_type_id": type_id, "channel": i, "has_pm": bool(has_pm),
+                 "app": app, "source": "app"} for i in range(n)]
+
+    # Fallback: classify from the component keys (unknown / new app).
+    def _ids(prefix):
+        out = []
+        for k in keys:
+            if k.startswith(prefix + ":"):
+                try:
+                    out.append(int(k.split(":", 1)[1]))
+                except (ValueError, IndexError):
+                    pass
+        return sorted(out)
+
+    covers   = _ids("cover")
+    rgbs     = _ids("rgb") + _ids("rgbw")
+    lights   = _ids("light")
+    ems      = _ids("em") + _ids("em1")
+    switches = _ids("switch")
+    inputs   = _ids("input")
+    has_pm   = bool(_ids("pm1")) or bool(ems)
+
+    def _mk(type_id, channels, pm):
+        return [{"device_type_id": type_id, "channel": c, "has_pm": pm,
+                 "app": app, "source": "components"} for c in channels]
+
+    # Priority mirrors the natural Shelly hierarchy (a cover/light/rgb device
+    # is never "just a switch" even though it has an underlying relay).
+    if covers:
+        return _mk("shellyCover", covers, has_pm)
+    if rgbs:
+        return _mk("shellyRGBW", [0], has_pm)
+    if lights:
+        return _mk("shellyDimmer", lights, has_pm)
+    if ems:
+        return _mk("shellyEM", ems, True)
+    if switches:
+        return _mk("shellyRelay", switches, has_pm)
+    if inputs:
+        return _mk("shellyI4", [0], False)
+    return []
+
 # Shelly RPC payload keys handled directly by the per-type _poll_* methods.
 # Anything NOT in this set is captured as a dynamic state by
 # _capture_unhandled_fields().  This is a UNION across all device types;

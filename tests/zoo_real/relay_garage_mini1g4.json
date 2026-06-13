@@ -1,0 +1,25 @@
+{
+  "device_info": {
+    "app": "Mini1G4",
+    "model": "S4SW-001X8EU",
+    "gen": 4,
+    "profile": null,
+    "auth_en": false
+  },
+  "config_keys": [
+    "ble",
+    "bthome",
+    "cloud",
+    "input:0",
+    "knx",
+    "matter",
+    "modbus",
+    "mqtt",
+    "script:1",
+    "script:2",
+    "switch:0",
+    "sys",
+    "wifi",
+    "ws"
+  ]
+}
