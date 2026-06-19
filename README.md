@@ -2,7 +2,7 @@
 
 Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo](https://www.indigodomo.com/). No cloud, no MQTT — the plugin talks to each Shelly straight over your LAN, and the Shellys push their state changes back to Indigo over a small built-in webhook listener.
 
-**Version:** 3.7 | **Author:** CliveS & Claude Opus 4.8 | **Platform:** Indigo 2022.1 or later
+**Version:** 3.11 | **Author:** CliveS & Claude Opus 4.8 | **Platform:** Indigo 2022.1 or later
 
 *Developed and tested on Indigo 2025.2 / Python 3.13. Older Indigo releases that meet the minimum API version above should also work — the API floor is what Indigo's plugin loader actually checks.*
 
@@ -32,6 +32,7 @@ Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo
 
 ## Recent changes
 
+- **v3.11** — fixes a Shelly that kept logging *Webhooks missing — repairing* every few hours. The cause turned out to be two Indigo device records that had ended up pointing at the same physical plug, each one quietly tearing down the other's webhooks and putting its own back, round and round forever. The plugin now notices when two records share a MAC address (or IP), keeps the original, leaves the duplicate well alone, and tells you in the log which one to delete. It also stops hammering away at a webhook it cannot get to land — after a few failed attempts on an unreachable device it settles into poll-only and goes quiet until that device next answers, instead of repeating the same noisy repair every cycle.
 - **v3.7** — energy accounting is now thread-safe, the nightly baseline reset survives a restart that happens to straddle midnight, and the webhook listener has a sensible cap on the request body it will read. The High Power Alert trigger only offers devices that can actually raise it.
 - **v3.6** — a more robust energy meter. If a Shelly returns a poll that is missing its cumulative energy reading (which can happen mid-reboot or under load), the plugin now keeps the last good figure rather than briefly reading it as zero, so the day's and month's kWh totals no longer get a phantom spike. The polling loop has also been hardened so a single misbehaving device can no longer stall it, and a device that keeps returning rubbish is marked offline rather than left looking healthy.
 - **v3.5** — sensor devices (H&T, Smoke, Flood, i4, EM, BLU buttons) now respond to a Send Status Request action.

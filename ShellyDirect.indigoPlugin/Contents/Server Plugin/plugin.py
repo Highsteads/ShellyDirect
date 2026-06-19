@@ -4,8 +4,25 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 4.8
-# Date:        13-06-2026
-# Version:     3.10
+# Date:        19-06-2026
+# Version:     3.11
+#
+# v3.11 (19-06-2026) — stop the perpetual webhook "missing - repairing" log churn.
+# Root cause was two Indigo device records bound to the SAME physical Shelly (same
+# MAC + IP): each 6-hourly health check saw only the other's webhooks, deleted them
+# as stale and reinstalled its own, ping-ponging forever (amplified by the flaky
+# .4.x 2.4GHz subnet dropping writes mid-repair as "no route").
+# - NEW _duplicate_device_ids(): detects self-owned records colliding on the same
+#   MAC (or IP when no MAC), keyed by channel_id so multi-channel devices and
+#   BLU gateway-sharing are NOT flagged. _check_webhook_health now skips the
+#   duplicate(s) entirely (keeping the lowest-id record) and logs ONE WARNING per
+#   colliding identity naming the duplicate and telling the user to delete it.
+# - NEW webhook repair back-off: after MAX_WEBHOOK_REPAIR_FAILS (3) consecutive
+#   repairs that don't "stick" (unreachable mid-write / clobbered), the health
+#   check stops the noisy delete/create/fail dance and stays quietly poll-only,
+#   logging a single WARNING. A successful poll (_mark_online) clears the back-off
+#   so a recovered device is retried. Repair now re-reads the hook list to confirm
+#   it actually landed before counting the device repaired.
 #
 # v3.10 (13-06-2026) — remove redundant native sensorValue state declarations from the
 # seven sensor device types (shellyHT, shellyI4, shellySmoke, shellyFlood, shellyEM,
@@ -167,6 +184,12 @@ PLUGIN_ID    = "com.clives.indigoplugin.shellydirect"
 WEBHOOK_PORT = 8178   # Plugin-owned HTTP listener
 VAR_FOLDER   = "ShellyDirect"
 HISTORY_DAYS = 30     # Rolling daily energy history retained per device
+
+# Webhook repair backoff: after this many consecutive health-check repairs that
+# fail to "stick" (device unreachable mid-write, or a duplicate record clobbering
+# them), stop the noisy delete/create/fail dance and stay quietly poll-only until
+# the device next polls successfully (which resets the counter via _mark_online).
+MAX_WEBHOOK_REPAIR_FAILS = 3
 
 # ---------------------------------------------------------------------------
 # APP_INFO  {app_field: (display_label, has_pm, device_type_id, num_channels)}
@@ -409,6 +432,8 @@ class Plugin(indigo.PluginBase):
         self.var_folder_id        = None # lazy-created ShellyDirect variable folder
         self.last_webhook_check   = 0.0  # timestamp of last webhook health check
         self.last_firmware_check  = 0.0  # timestamp of last firmware notify check
+        self.webhook_repair_fails = {}   # {dev_id: int}  consecutive repairs that didn't stick
+        self._dup_warned          = set()# MAC/IP+channel keys already warned about as duplicates
 
         log_level = self._pref_int(prefs, "logLevel", logging.INFO)
         self.indigo_log_handler.setLevel(log_level)
@@ -1409,13 +1434,74 @@ class Plugin(indigo.PluginBase):
                 f'Manually configure the device to POST to: {url_template}'
             )
 
+    def _duplicate_device_ids(self):
+        """Detect self-owned device records that collide on the same physical Shelly.
+
+        Two Indigo device records bound to one physical device (same MAC, or same
+        IP when a MAC isn't stored, AND the same channel) fight over that device's
+        webhooks: each health check sees only the other's hooks, deletes them as
+        "stale" and reinstalls its own, ping-ponging forever. Discovery normally
+        prevents this (existing-IP / existing-MAC checks), but a manual double-add
+        or a blank-prop window can still slip a duplicate through.
+
+        Returns (dup_ids, collisions):
+          dup_ids    - set of device IDs to treat as duplicates (every member of a
+                       colliding group except the canonical lowest-id keeper)
+          collisions - list of (key, keeper, [losers]) for warning the user
+
+        Multi-channel devices legitimately share a MAC across channels, so the
+        bucket key includes channel_id. BLU devices legitimately share the BLE
+        gateway IP, so they're excluded entirely.
+        """
+        buckets = {}
+        for dev in indigo.devices.iter("self"):
+            if not dev.enabled or not dev.configured:
+                continue
+            if dev.deviceTypeId in BLU_TYPES:
+                continue
+            mac     = dev.pluginProps.get("mac_address", "").strip().upper()
+            ip      = dev.pluginProps.get("ip_address",  "").strip()
+            channel = str(dev.pluginProps.get("channel_id", "0"))
+            ident   = mac or ip                      # MAC preferred, IP as fallback
+            if not ident:
+                continue
+            buckets.setdefault((ident, channel), []).append(dev)
+
+        dup_ids    = set()
+        collisions = []
+        for (ident, _channel), devs in buckets.items():
+            if len(devs) > 1:
+                devs_sorted = sorted(devs, key=lambda d: d.id)
+                keeper      = devs_sorted[0]
+                losers      = devs_sorted[1:]
+                dup_ids.update(d.id for d in losers)
+                collisions.append((ident, keeper, losers))
+        return dup_ids, collisions
+
     def _check_webhook_health(self):
         """Verify webhooks are still registered on all non-battery devices and repair if not."""
         self.logger.debug("Webhook health check starting ...")
         repaired = 0
+
+        # Skip duplicate records so two devices can't ping-pong each other's
+        # webhooks. Warn once per colliding identity so the user can delete one.
+        dup_ids, collisions = self._duplicate_device_ids()
+        for ident, keeper, losers in collisions:
+            loser_str = ", ".join(f"'{d.name}' (id={d.id})" for d in losers)
+            if ident not in self._dup_warned:
+                log(
+                    f"Duplicate device records share {ident}: keeping '{keeper.name}' "
+                    f"(id={keeper.id}); {loser_str} are duplicates and are being skipped "
+                    f"for webhook repair. Delete the duplicate record(s) to silence this.",
+                    level="WARNING",
+                )
+                self._dup_warned.add(ident)
+
         for dev in indigo.devices.iter("self"):
             if not dev.enabled or not dev.configured:
                 continue
+            if dev.id in dup_ids:
+                continue   # duplicate record — never touch its webhooks
             if dev.deviceTypeId in PUSH_ONLY_TYPES:
                 continue
             # BLU devices: health is checked via the BLU-specific URL pattern below
@@ -1444,10 +1530,45 @@ class Plugin(indigo.PluginBase):
                 hooks    = resp.json().get("hooks", [])
                 all_urls = [u for h in hooks for u in h.get("urls", [])]
                 # Check at least one webhook for this device exists
-                if not any(f"devId={dev.id}" in u for u in all_urls):
-                    log(f'[{dev.name}] Webhooks missing - repairing ...')
-                    self._configure_webhooks(dev)
+                if any(f"devId={dev.id}" in u for u in all_urls):
+                    self.webhook_repair_fails.pop(dev.id, None)   # present -> all good
+                    continue
+
+                fails = self.webhook_repair_fails.get(dev.id, 0)
+                if fails >= MAX_WEBHOOK_REPAIR_FAILS:
+                    # Repair hasn't held after several attempts — stay quietly
+                    # poll-only. _mark_online clears this on the next good poll.
+                    self.logger.debug(
+                        f'[{dev.name}] webhooks still missing (gave up after {fails} '
+                        f'attempts) - poll-only'
+                    )
+                    continue
+
+                log(f'[{dev.name}] Webhooks missing - repairing ...')
+                self._configure_webhooks(dev)
+
+                # Did the repair actually stick? (flaky link / duplicate clobber)
+                stuck = False
+                try:
+                    recheck  = self._rget(f"http://{ip}/rpc/Webhook.List", timeout=3)
+                    rhooks   = recheck.json().get("hooks", []) if recheck.status_code == 200 else []
+                    stuck    = any(f"devId={dev.id}" in u
+                                   for h in rhooks for u in h.get("urls", []))
+                except Exception:
+                    stuck = False
+
+                if stuck:
+                    self.webhook_repair_fails.pop(dev.id, None)
                     repaired += 1
+                else:
+                    self.webhook_repair_fails[dev.id] = fails + 1
+                    if self.webhook_repair_fails[dev.id] >= MAX_WEBHOOK_REPAIR_FAILS:
+                        log(
+                            f'[{dev.name}] Webhook repair has not held after '
+                            f'{MAX_WEBHOOK_REPAIR_FAILS} attempts - staying poll-only. '
+                            f'Check device reachability or duplicate device records.',
+                            level="WARNING",
+                        )
             except Exception:
                 pass   # Device unreachable - skip silently
         if repaired:
@@ -2050,6 +2171,9 @@ class Plugin(indigo.PluginBase):
     def _mark_online(self, dev):
         self.last_seen[dev.id]  = time.time()
         self.fail_count[dev.id] = 0          # reset consecutive failure counter
+        # A successful poll proves the device is reachable, so allow the webhook
+        # health check to attempt repair afresh next cycle (clears any back-off).
+        self.webhook_repair_fails.pop(dev.id, None)
         if not dev.states.get("deviceOnline", True):
             dev.updateStateOnServer("deviceOnline", True)
             log(f'[{dev.name}] back online')
