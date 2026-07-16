@@ -87,46 +87,19 @@ VAR_FOLDER      = _module.VAR_FOLDER
 # ---------------------------------------------------------------------------
 
 def make_plugin(**prefs_overrides):
-    """Return a thin object that carries plugin instance state for unit tests."""
+    """Return a thin object that carries plugin instance state for unit tests.
+
+    v3.12: the rate/cost fields (rate_source, fixed_rate, rate_var,
+    currency_prefix/suffix) and the _calc_cost helper + its TestCalcCost suite
+    were REMOVED — they tested an isolated copy of a per-kWh cost feature that
+    does not exist anywhere in plugin.py (10 phantom tests giving false
+    confidence, found by the 16-Jul-2026 deep review)."""
     obj = MagicMock()
-    obj.rate_source     = prefs_overrides.get("rate_source",     "disabled")
-    obj.fixed_rate      = prefs_overrides.get("fixed_rate",      "")
-    obj.rate_var        = prefs_overrides.get("rate_var",        "elec_unit_rate_p")
-    obj.currency_prefix = prefs_overrides.get("currency_prefix", "")
-    obj.currency_suffix = prefs_overrides.get("currency_suffix", "p")
     obj.stale_minutes   = prefs_overrides.get("stale_minutes",   10)
     obj.triggers        = prefs_overrides.get("triggers",        [])
     obj.power_alert_active = {}
     obj.last_seen       = {}
     return obj
-
-
-def _calc_cost(obj, kwh):
-    """Isolated copy of Plugin._calc_cost for testing."""
-    pre = obj.currency_prefix
-    suf = obj.currency_suffix
-
-    def _format(value):
-        dp = 1 if (not pre and suf) else 2
-        return f"{pre}{value:.{dp}f}{suf}"
-
-    if obj.rate_source == "disabled":
-        return 0.0, ""
-    if obj.rate_source == "fixed":
-        try:
-            rate = float(obj.fixed_rate)
-            cost = kwh * rate
-            return cost, _format(cost)
-        except (ValueError, TypeError):
-            return 0.0, ""
-    if obj.rate_source == "variable":
-        try:
-            rate = float(indigo_mock.variables[obj.rate_var].value)
-            cost = kwh * rate
-            return cost, _format(cost)
-        except Exception:
-            return 0.0, ""
-    return 0.0, ""
 
 
 def _sanitise_var_name(s):
@@ -183,25 +156,10 @@ def _fire_trigger(obj, type_id, dev_id, event_props=None):
     return fired
 
 
-def _track_energy(total_wh, entry, today_str, month_str):
-    """Isolated copy of energy baseline arithmetic from _track_energy."""
-    if "day_baseline_wh" not in entry or total_wh < entry.get("day_baseline_wh", 0):
-        entry["day_baseline_wh"] = total_wh
-        entry["day_date"]        = today_str
-    if "month_baseline_wh" not in entry or total_wh < entry.get("month_baseline_wh", 0):
-        entry["month_baseline_wh"] = total_wh
-        entry["month_date"]        = month_str
-    today_kwh = max(0.0, (total_wh - entry["day_baseline_wh"])   / 1000.0)
-    month_kwh = max(0.0, (total_wh - entry["month_baseline_wh"]) / 1000.0)
-    return today_kwh, month_kwh, entry
-
-
-def _is_stale_webhook_url(url, wanted_urls):
-    """Isolated stale detection: any shellyEvent URL not in wanted_urls is stale."""
-    if url in wanted_urls:
-        return False
-    return "shellyEvent" in url
-
+# NB (v3.12): the _track_energy and _is_stale_webhook_url ISOLATED COPIES and
+# their test classes were removed — both had drifted from the real algorithms
+# (in-place day rollover; devId-aware stale test). The REAL methods are now
+# tested directly in repo tests/test_v312_fixes.py.
 
 # ===========================================================================
 # Test classes
@@ -344,119 +302,6 @@ class TestSanitiseVarName(unittest.TestCase):
         self.assertNotIn("\u00e9", result)
 
 
-class TestCalcCost(unittest.TestCase):
-
-    def test_disabled_returns_zero_empty(self):
-        p = make_plugin(rate_source="disabled")
-        cost, ui = _calc_cost(p, 1.5)
-        self.assertEqual(cost, 0.0)
-        self.assertEqual(ui, "")
-
-    def test_fixed_rate_pence(self):
-        p = make_plugin(rate_source="fixed", fixed_rate="24.5",
-                        currency_prefix="", currency_suffix="p")
-        cost, ui = _calc_cost(p, 1.0)
-        self.assertAlmostEqual(cost, 24.5)
-        self.assertEqual(ui, "24.5p")
-
-    def test_fixed_rate_pence_one_dp(self):
-        """Pence (suffix-only) must display 1dp."""
-        p = make_plugin(rate_source="fixed", fixed_rate="24.5",
-                        currency_prefix="", currency_suffix="p")
-        _, ui = _calc_cost(p, 2.0)
-        self.assertEqual(ui, "49.0p")
-
-    def test_fixed_rate_dollars_two_dp(self):
-        """Dollar prefix must display 2dp."""
-        p = make_plugin(rate_source="fixed", fixed_rate="0.12",
-                        currency_prefix="$", currency_suffix="")
-        cost, ui = _calc_cost(p, 1.0)
-        self.assertAlmostEqual(cost, 0.12)
-        self.assertEqual(ui, "$0.12")
-
-    def test_fixed_rate_euro(self):
-        p = make_plugin(rate_source="fixed", fixed_rate="0.28",
-                        currency_prefix="EUR", currency_suffix="")
-        cost, ui = _calc_cost(p, 1.0)
-        self.assertAlmostEqual(cost, 0.28)
-        self.assertTrue(ui.startswith("EUR"))
-
-    def test_fixed_rate_invalid_returns_zero(self):
-        p = make_plugin(rate_source="fixed", fixed_rate="not_a_number")
-        cost, ui = _calc_cost(p, 1.0)
-        self.assertEqual(cost, 0.0)
-        self.assertEqual(ui, "")
-
-    def test_fixed_rate_zero_kwh(self):
-        p = make_plugin(rate_source="fixed", fixed_rate="24.5",
-                        currency_prefix="", currency_suffix="p")
-        cost, ui = _calc_cost(p, 0.0)
-        self.assertAlmostEqual(cost, 0.0)
-        self.assertEqual(ui, "0.0p")
-
-    def test_variable_rate_success(self):
-        p = make_plugin(rate_source="variable", rate_var="elec_unit_rate_p",
-                        currency_prefix="", currency_suffix="p")
-        indigo_mock.variables["elec_unit_rate_p"] = MagicMock()
-        indigo_mock.variables["elec_unit_rate_p"].value = "22.0"
-        cost, ui = _calc_cost(p, 1.0)
-        self.assertAlmostEqual(cost, 22.0)
-        self.assertEqual(ui, "22.0p")
-
-    def test_variable_rate_missing_var_returns_zero(self):
-        p = make_plugin(rate_source="variable", rate_var="nonexistent_var")
-        indigo_mock.variables.__getitem__.side_effect = KeyError("nonexistent_var")
-        cost, ui = _calc_cost(p, 1.0)
-        self.assertEqual(cost, 0.0)
-        self.assertEqual(ui, "")
-        indigo_mock.variables.__getitem__.side_effect = None
-
-    def test_fractional_kwh(self):
-        p = make_plugin(rate_source="fixed", fixed_rate="24.0",
-                        currency_prefix="", currency_suffix="p")
-        cost, _ = _calc_cost(p, 0.5)
-        self.assertAlmostEqual(cost, 12.0)
-
-
-class TestTrackEnergy(unittest.TestCase):
-
-    def test_first_reading_sets_baseline(self):
-        entry = {}
-        today_kwh, month_kwh, entry = _track_energy(5000, entry, "2026-03-23", "2026-03")
-        self.assertEqual(entry["day_baseline_wh"],   5000)
-        self.assertEqual(entry["month_baseline_wh"], 5000)
-        self.assertEqual(today_kwh,  0.0)
-        self.assertEqual(month_kwh,  0.0)
-
-    def test_energy_consumed_since_baseline(self):
-        entry = {"day_baseline_wh": 5000, "day_date": "2026-03-23",
-                 "month_baseline_wh": 4000, "month_date": "2026-03"}
-        today_kwh, month_kwh, _ = _track_energy(6000, entry, "2026-03-23", "2026-03")
-        self.assertAlmostEqual(today_kwh,  1.0)
-        self.assertAlmostEqual(month_kwh,  2.0)
-
-    def test_meter_rollover_resets_baseline(self):
-        """If total_wh drops below baseline (rollover/replacement), baseline resets."""
-        entry = {"day_baseline_wh": 9999, "day_date": "2026-03-23",
-                 "month_baseline_wh": 9999, "month_date": "2026-03"}
-        today_kwh, month_kwh, entry = _track_energy(100, entry, "2026-03-23", "2026-03")
-        self.assertEqual(entry["day_baseline_wh"], 100)
-        self.assertEqual(today_kwh, 0.0)
-
-    def test_no_negative_kwh(self):
-        """Energy must never go negative."""
-        entry = {"day_baseline_wh": 5000, "day_date": "2026-03-23",
-                 "month_baseline_wh": 5000, "month_date": "2026-03"}
-        today_kwh, _, _ = _track_energy(4999, entry, "2026-03-23", "2026-03")
-        self.assertEqual(today_kwh, 0.0)
-
-    def test_conversion_wh_to_kwh(self):
-        entry = {"day_baseline_wh": 0, "day_date": "2026-03-23",
-                 "month_baseline_wh": 0, "month_date": "2026-03"}
-        today_kwh, _, _ = _track_energy(2500, entry, "2026-03-23", "2026-03")
-        self.assertAlmostEqual(today_kwh, 2.5)
-
-
 class TestFireTrigger(unittest.TestCase):
 
     def _make_trigger(self, type_id, device_id="any", input_id="any", press_type="any"):
@@ -526,35 +371,6 @@ class TestFireTrigger(unittest.TestCase):
         p = make_plugin(triggers=[])
         fired = _fire_trigger(p, "deviceWentOffline", 42)
         self.assertEqual(fired, [])
-
-
-class TestStaleWebhookDetection(unittest.TestCase):
-
-    def test_wanted_url_not_stale(self):
-        url     = "http://192.168.1.20:8178/shellyEvent?devId=100&type=switch&state=on"
-        wanted  = {url}
-        self.assertFalse(_is_stale_webhook_url(url, wanted))
-
-    def test_old_device_id_is_stale(self):
-        old_url = "http://192.168.1.20:8178/shellyEvent?devId=9999&type=switch&state=on"
-        new_url = "http://192.168.1.20:8178/shellyEvent?devId=100&type=switch&state=on"
-        wanted  = {new_url}
-        self.assertTrue(_is_stale_webhook_url(old_url, wanted))
-
-    def test_non_plugin_url_not_stale(self):
-        url    = "http://192.168.1.20:8080/other_endpoint?foo=bar"
-        wanted = set()
-        self.assertFalse(_is_stale_webhook_url(url, wanted))
-
-    def test_old_server_ip_is_stale(self):
-        old_url = "http://192.168.1.50:8178/shellyEvent?devId=100&type=switch&state=on"
-        new_url = "http://192.168.1.20:8178/shellyEvent?devId=100&type=switch&state=on"
-        wanted  = {new_url}
-        self.assertTrue(_is_stale_webhook_url(old_url, wanted))
-
-    def test_empty_wanted_any_plugin_url_is_stale(self):
-        url    = "http://192.168.1.20:8178/shellyEvent?devId=42&type=button&event=single"
-        self.assertTrue(_is_stale_webhook_url(url, set()))
 
 
 class TestMultiSubnetParsing(unittest.TestCase):

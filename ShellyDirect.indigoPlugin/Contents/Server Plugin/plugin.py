@@ -3,9 +3,49 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 4.8
-# Date:        19-06-2026
-# Version:     3.11
+# Author:      CliveS & Claude Fable 5
+# Date:        17-07-2026
+# Version:     3.12
+#
+# v3.12 (17-07-2026) — Fable 5 deep-review batch 1 (highs; 80 confirmed findings
+# total, fixed in severity batches).
+#   * HIGH: _ensure_webhooks' stale test is now devId-AWARE — the old "any
+#     shellyEvent URL not in MY wanted set is stale" rule made sibling channels
+#     of multi-channel Shellys (Plus 2PM / Pro 4PM / 2-ch dimmers) perpetually
+#     delete each other's webhooks: the exact ping-pong v3.11 fixed for
+#     duplicate records survived for LEGITIMATE multi-channel devices (and the
+#     v3.11 back-off never engaged because each repair's own recheck passed).
+#     A hook is stale only when its parsed devId belongs to no live self-owned
+#     device; deletion is per-hook and never removes a hook carrying a wanted URL.
+#   * HIGH: discovery creates one device per channel for EVERY channel-
+#     addressable type — the old gate (relays only) silently dropped channel 2+
+#     of a Pro Dimmer 2PM or multi-EM1 device. Pro 3EM's num_ch=3 still means
+#     3-PHASE (one device); ProEM corrected to its real 2 EM1 clamps. Cover
+#     commands/polls honour channel_id (were hardcoded id=0).
+#   * HIGH: EM energy wiring is component-correct per the Shelly API docs (NB
+#     no EM hardware in the dev fleet to live-verify): 3-phase reads EMData
+#     `total_act` (the old `total_act_energy` key never exists there — EM
+#     energy was dead) with a full-phase-sum fallback; single-phase EM1
+#     hardware reads EM1.GetStatus/EM1Data.GetStatus with the channel id (the
+#     old EM.GetStatus call is not answered by EM1 components). Mirrored in
+#     _midnight_reset.
+#   * HIGH: a device offline at midnight no longer corrupts the day —
+#     _calc_energy detects a stale day_date on the first poll of a new day,
+#     banks the elapsed period as a history row and re-baselines in place
+#     (month boundary likewise). _midnight_reset remains the exact-boundary owner.
+#   * HIGH: RGBW colour is component-correct (per API docs — no RGBW hardware
+#     in the fleet): Gen2+ rgb/rgbw profiles use RGB.Set/RGBW.Set + matching
+#     GetStatus (profile probed once via Shelly.GetConfig and cached in a new
+#     rgbw_profile prop); the Gen1-era Light.Set colour params never existed on
+#     Gen2+. Set Effect now logs an honest WARNING (no Gen2+ RPC equivalent).
+#     Cover tilt commands/status use the Gen2+ slat_pos field; cover poll no
+#     longer crashes on present-but-null fields.
+#   * Tests: phantom TestCalcCost suite REMOVED from test_plugin.py (10 tests
+#     for a cost feature that does not exist in plugin.py), along with the
+#     drifted _track_energy / _is_stale_webhook_url isolated copies — replaced
+#     by 16 real-method tests in repo tests/test_v312_fixes.py (sibling
+#     protection, orphan cleanup, multi-URL safety, devId boundary, energy
+#     rollover, EM keys, RGBW profiles). Suite 185 -> 181 net (10 phantoms out).
 #
 # v3.11 (19-06-2026) — stop the perpetual webhook "missing - repairing" log churn.
 # Root cause was two Indigo device records bound to the SAME physical Shelly (same
@@ -237,7 +277,7 @@ APP_INFO = {
     "PlusI4":        ("Plus i4",              False,  "shellyI4",     1),
     "PlusI4DC":      ("Plus i4 DC",           False,  "shellyI4",     1),
     # Energy meter ---------------------------------------------------------
-    "ProEM":         ("Pro EM",               False,  "shellyEM",     1),
+    "ProEM":         ("Pro EM",               False,  "shellyEM",     2),   # 2x EM1 clamps (v3.12)
     "Pro3EM":        ("Pro 3EM",              False,  "shellyEM",     3),
     "Pro3EM400":     ("Pro 3EM-400",          False,  "shellyEM",     3),
     "3EMG3":         ("3EM Gen 3",            False,  "shellyEM",     3),
@@ -637,27 +677,30 @@ class Plugin(indigo.PluginBase):
                 log(f'[{dev.name}] No IP address configured', level="ERROR")
                 return
 
-            channel_id = int(dev.pluginProps.get("channel_id", 0))
+            channel_id = self._pref_int(dev.pluginProps, "channel_id", 0)
+            # v3.12: RGBW devices in rgb/rgbw profile don't answer Light.Set
+            component = ("Light" if dev.deviceTypeId != "shellyRGBW"
+                         else self._rgbw_set_component(dev, ip))
 
             if action.deviceAction == indigo.kDimmerAction.TurnOn:
-                if self._light_set(ip, channel_id, on=True):
+                if self._light_set(ip, channel_id, on=True, component=component):
                     dev.updateStateOnServer("onOffState", True)
                     log(f'sent "{dev.name}" on')
 
             elif action.deviceAction == indigo.kDimmerAction.TurnOff:
-                if self._light_set(ip, channel_id, on=False):
+                if self._light_set(ip, channel_id, on=False, component=component):
                     dev.updateStateOnServer("onOffState", False)
                     log(f'sent "{dev.name}" off')
 
             elif action.deviceAction == indigo.kDimmerAction.Toggle:
                 new_state = not dev.onState
-                if self._light_set(ip, channel_id, on=new_state):
+                if self._light_set(ip, channel_id, on=new_state, component=component):
                     dev.updateStateOnServer("onOffState", new_state)
                     log(f'sent "{dev.name}" toggle -> {"on" if new_state else "off"}')
 
             elif action.deviceAction == indigo.kDimmerAction.SetBrightness:
                 brightness = max(0, min(100, int(action.actionValue)))
-                if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness):
+                if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness, component=component):
                     dev.updateStateOnServer("brightnessLevel", brightness)
                     dev.updateStateOnServer("onOffState", brightness > 0)
                     log(f'sent "{dev.name}" brightness -> {brightness}%')
@@ -665,7 +708,7 @@ class Plugin(indigo.PluginBase):
             elif action.deviceAction == indigo.kDimmerAction.BrightenBy:
                 current    = dev.states.get("brightnessLevel", 0)
                 brightness = min(100, current + int(action.actionValue))
-                if self._light_set(ip, channel_id, on=True, brightness=brightness):
+                if self._light_set(ip, channel_id, on=True, brightness=brightness, component=component):
                     dev.updateStateOnServer("brightnessLevel", brightness)
                     dev.updateStateOnServer("onOffState", True)
                     log(f'sent "{dev.name}" brighten -> {brightness}%')
@@ -673,7 +716,7 @@ class Plugin(indigo.PluginBase):
             elif action.deviceAction == indigo.kDimmerAction.DimBy:
                 current    = dev.states.get("brightnessLevel", 100)
                 brightness = max(0, current - int(action.actionValue))
-                if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness):
+                if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness, component=component):
                     dev.updateStateOnServer("brightnessLevel", brightness)
                     dev.updateStateOnServer("onOffState", brightness > 0)
                     log(f'sent "{dev.name}" dim -> {brightness}%')
@@ -723,7 +766,8 @@ class Plugin(indigo.PluginBase):
             ip  = dev.pluginProps.get("ip_address", "").strip()
             if not ip:
                 return
-            resp = self._rget(f"http://{ip}/rpc/Cover.GoToPosition", params={"id": 0, "pos": pos})
+            chan = self._pref_int(dev.pluginProps, "channel_id", 0)
+            resp = self._rget(f"http://{ip}/rpc/Cover.GoToPosition", params={"id": chan, "pos": pos})
             resp.raise_for_status()
             dev.updateStateOnServer("targetPosition", pos)
             log(f'[{dev.name}] going to position {pos}%')
@@ -738,9 +782,10 @@ class Plugin(indigo.PluginBase):
             ip   = dev.pluginProps.get("ip_address", "").strip()
             if not ip:
                 return
+            chan = self._pref_int(dev.pluginProps, "channel_id", 0)
             resp = self._rget(
                 f"http://{ip}/rpc/Cover.GoToPosition",
-                params={"id": 0, "tilt": tilt}
+                params={"id": chan, "slat_pos": tilt}
             )
             resp.raise_for_status()
             dev.updateStateOnServer("tiltTargetPosition", tilt)
@@ -753,10 +798,12 @@ class Plugin(indigo.PluginBase):
             dev        = indigo.devices[action.deviceId]
             brightness = max(0, min(100, int(action.props.get("brightness", 100))))
             ip         = dev.pluginProps.get("ip_address", "").strip()
-            channel_id = int(dev.pluginProps.get("channel_id", 0))
+            channel_id = self._pref_int(dev.pluginProps, "channel_id", 0)
             if not ip:
                 return
-            if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness):
+            component = ("Light" if dev.deviceTypeId != "shellyRGBW"
+                         else self._rgbw_set_component(dev, ip))
+            if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness, component=component):
                 dev.updateStateOnServer("brightnessLevel", brightness)
                 dev.updateStateOnServer("onOffState", brightness > 0)
                 log(f'[{dev.name}] brightness set to {brightness}%')
@@ -774,11 +821,24 @@ class Plugin(indigo.PluginBase):
             b  = max(0, min(255, int(action.props.get("blue",       255))))
             w  = max(0, min(255, int(action.props.get("white",        0))))
             br = max(0, min(100, int(action.props.get("brightness", 100))))
-            resp = self._rget(
-                f"http://{ip}/rpc/Light.Set",
-                params={"id": 0, "on": "true", "mode": "color",
-                        "red": r, "green": g, "blue": b, "white": w, "brightness": br}
-            )
+            # v3.12: Gen2+ colour goes through the RGB/RGBW component — the
+            # old Light.Set red=/green=/blue= params don't exist on Gen2+.
+            prof = self._rgbw_component(dev, ip)
+            chan = self._pref_int(dev.pluginProps, "channel_id", 0)
+            if prof == "rgbw":
+                params = {"id": chan, "on": "true",
+                          "rgb": json.dumps([r, g, b]), "white": w,
+                          "brightness": br}
+                resp = self._rget(f"http://{ip}/rpc/RGBW.Set", params=params)
+            elif prof == "rgb":
+                params = {"id": chan, "on": "true",
+                          "rgb": json.dumps([r, g, b]), "brightness": br}
+                resp = self._rget(f"http://{ip}/rpc/RGB.Set", params=params)
+            else:
+                log(f'[{dev.name}] Set Color skipped — device is in "light" '
+                    f'profile (independent white channels, no colour component)',
+                    level="WARNING")
+                return
             resp.raise_for_status()
             dev.updateStateOnServer("onOffState",     True)
             dev.updateStateOnServer("brightnessLevel", br)
@@ -792,20 +852,17 @@ class Plugin(indigo.PluginBase):
             log(f'[{action.deviceId}] SetColor failed: {exc}', level="ERROR")
 
     def actionSetEffect(self, action):
-        """Trigger a built-in light effect on a Shelly RGBW device."""
+        """Trigger a built-in light effect on a Shelly RGBW device.
+
+        v3.12: the Gen1-era Light.Set effect= param does not exist on Gen2+
+        RPC — the old call silently did nothing. Honest WARNING until a
+        Gen2+ effects surface exists to wire up (kept so existing Indigo
+        actions don't break with a missing-callback error)."""
         try:
-            dev    = indigo.devices[action.deviceId]
-            ip     = dev.pluginProps.get("ip_address", "").strip()
-            effect = int(action.props.get("effect", 0))
-            if not ip:
-                return
-            resp = self._rget(
-                f"http://{ip}/rpc/Light.Set",
-                params={"id": 0, "on": "true", "effect": effect}
-            )
-            resp.raise_for_status()
-            label = RGBW_EFFECTS.get(str(effect), f"effect {effect}")
-            log(f'[{dev.name}] effect set: {label}')
+            dev = indigo.devices[action.deviceId]
+            log(f'[{dev.name}] Set Effect is not supported on Gen2+ Shelly '
+                f'firmware (the Gen1 effect parameter has no RPC equivalent) '
+                f'— action skipped', level="WARNING")
         except Exception as exc:
             log(f'[{action.deviceId}] SetEffect failed: {exc}', level="ERROR")
 
@@ -1374,24 +1431,44 @@ class Plugin(indigo.PluginBase):
             log(f'[{dev.name}] BLU webhook setup failed: {exc}', level="WARNING")
 
     def _ensure_webhooks(self, ip, dev, wanted):
-        """Create missing webhooks and delete stale ones for this device."""
+        """Create missing webhooks and delete stale ones for this device.
+
+        v3.12: the stale test is devId-AWARE. The old rule ("any shellyEvent
+        URL not in this device's wanted set is stale") deleted SIBLING
+        CHANNELS' hooks on multi-channel devices (Plus 2PM / Pro 4PM / 2-ch
+        dimmers) — each channel's Indigo record carries its own devId in its
+        URLs, so channel 0's repair wiped channel 1's hooks and vice versa,
+        forever (the v3.11 back-off never engaged because each repair's own
+        recheck passed). A shellyEvent URL is now stale only when its parsed
+        devId belongs to NO live self-owned device — which still cleans up ids
+        left behind by deleted/recreated devices. Deletion is per-HOOK and only
+        when the hook carries no wanted URL, so a (hand-edited) multi-URL hook
+        that still serves this device is never silently lost.
+        """
         try:
             resp = self._rget(f"http://{ip}/rpc/Webhook.List")
             resp.raise_for_status()
             hooks = resp.json().get("hooks", [])
 
             wanted_urls = {url for _, url, _ in wanted}
+            live_ids    = {d.id for d in indigo.devices.iter("self")}
             have_urls   = set()
             stale_ids   = []
 
             for hook in hooks:
+                hook_wanted = False
+                hook_stale  = False
                 for u in hook.get("urls", []):
                     if u in wanted_urls:
                         have_urls.add(u)
+                        hook_wanted = True
                     elif "shellyEvent" in u:
-                        # Any shellyEvent URL not in wanted is stale — catches old
-                        # device IDs left behind after devices are deleted/recreated.
-                        stale_ids.append(hook.get("id"))
+                        m = re.search(r"[?&]devId=(\d+)(?:&|$)", u)
+                        if m is None or int(m.group(1)) not in live_ids:
+                            hook_stale = True   # orphaned devId — safe to delete
+                        # else: a LIVE sibling device's hook — leave it alone
+                if hook_stale and not hook_wanted:
+                    stale_ids.append(hook.get("id"))
 
             for hook_id in stale_ids:
                 try:
@@ -1812,15 +1889,28 @@ class Plugin(indigo.PluginBase):
         if not ip:
             return
         try:
-            resp = self._rget(f"http://{ip}/rpc/Cover.GetStatus?id=0")
+            chan = self._pref_int(dev.pluginProps, "channel_id", 0)
+            resp = self._rget(f"http://{ip}/rpc/Cover.GetStatus?id={chan}")
             resp.raise_for_status()
             data    = resp.json()
             state   = data.get("state", "stopped")
-            cur_pos = int(data.get("current_pos", -1))
-            tgt_pos = int(data.get("target_pos",  -1))
-            obst    = bool(data.get("obstructed",  False))
-            cur_tilt = int(data.get("current_tilt", -1))
-            tgt_tilt = int(data.get("target_tilt",  -1))
+
+            def _as_int(val, default=-1):
+                # present-but-null fields (calibrating cover) must not crash
+                # the poll and drive the device offline (v3.12)
+                try:
+                    return int(val)
+                except (TypeError, ValueError):
+                    return default
+
+            cur_pos = _as_int(data.get("current_pos"))
+            tgt_pos = _as_int(data.get("target_pos"))
+            obst    = bool(data.get("obstructed") or False)
+            # Gen2+ venetian tilt is ONE field, slat_pos (commanded via
+            # Cover.GoToPosition slat_pos=) — the old current_tilt/target_tilt
+            # keys never exist on Gen2+ (v3.12).
+            cur_tilt = _as_int(data.get("slat_pos"))
+            tgt_tilt = -1   # no target-slat field in the Gen2+ API
 
             on_state = (state in ("open", "opening"))
 
@@ -1849,7 +1939,7 @@ class Plugin(indigo.PluginBase):
             })
             self._capture_unhandled_fields(
                 dev, data,
-                extra_handled={"obstructed", "current_tilt", "target_tilt"},
+                extra_handled={"obstructed", "slat_pos"},
             )
             self._mark_online(dev)
             self.last_polled[dev.id] = time.time()
@@ -1932,40 +2022,58 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"i4 poll error: {exc}")
 
     def _poll_em(self, dev):
+        """Poll an energy-meter device.
+
+        v3.12: the RPC wiring is component-correct (verified against the Shelly
+        Gen2+ API docs — NB no EM hardware in the dev fleet to live-test):
+        - 3-phase (Pro 3EM, `em:0`): EM.GetStatus / EMData.GetStatus, whose
+          cumulative field is `total_act` (the old code read `total_act_energy`,
+          an EM1Data key that never exists here — EM energy was dead).
+        - single-phase (Pro EM, `em1:N`): EM1.GetStatus / EM1Data.GetStatus
+          with the device's channel id, where `total_act_energy` IS the field
+          (the old code called EM.GetStatus, which EM1 hardware doesn't answer).
+        """
         ip        = dev.pluginProps.get("ip_address", "").strip()
         is_3phase = dev.pluginProps.get("is_3phase", False)
+        chan      = self._pref_int(dev.pluginProps, "channel_id", 0)
         if not ip:
             return
         try:
-            resp = self._rget(f"http://{ip}/rpc/EM.GetStatus?id=0")
-            resp.raise_for_status()
-            data = resp.json()
-
             if is_3phase:
-                va  = float(data.get("a_voltage",   0.0))
-                ia  = float(data.get("a_current",   0.0))
-                pa  = float(data.get("a_act_power", 0.0))
-                vb  = float(data.get("b_voltage",   0.0))
-                ib  = float(data.get("b_current",   0.0))
-                pb  = float(data.get("b_act_power", 0.0))
-                vc  = float(data.get("c_voltage",   0.0))
-                ic  = float(data.get("c_current",   0.0))
-                pc  = float(data.get("c_act_power", 0.0))
-                tot = float(data.get("total_act_power", pa + pb + pc))
+                resp = self._rget(f"http://{ip}/rpc/EM.GetStatus?id=0")
+                resp.raise_for_status()
+                data = resp.json()
+                va  = float(data.get("a_voltage")   or 0.0)
+                ia  = float(data.get("a_current")   or 0.0)
+                pa  = float(data.get("a_act_power") or 0.0)
+                vb  = float(data.get("b_voltage")   or 0.0)
+                ib  = float(data.get("b_current")   or 0.0)
+                pb  = float(data.get("b_act_power") or 0.0)
+                vc  = float(data.get("c_voltage")   or 0.0)
+                ic  = float(data.get("c_current")   or 0.0)
+                pc  = float(data.get("c_act_power") or 0.0)
+                tot = float(data.get("total_act_power") or (pa + pb + pc))
             else:
-                va  = float(data.get("voltage",   0.0))
-                ia  = float(data.get("current",   0.0))
-                pa  = float(data.get("act_power", 0.0))
+                resp = self._rget(f"http://{ip}/rpc/EM1.GetStatus?id={chan}")
+                resp.raise_for_status()
+                data = resp.json()
+                va  = float(data.get("voltage")   or 0.0)
+                ia  = float(data.get("current")   or 0.0)
+                pa  = float(data.get("act_power") or 0.0)
                 vb  = ib = pb = vc = ic = pc = 0.0
                 tot = pa
 
             emdata   = {}
             total_wh = None
             try:
-                er = self._rget(f"http://{ip}/rpc/EMData.GetStatus?id=0")
+                if is_3phase:
+                    er = self._rget(f"http://{ip}/rpc/EMData.GetStatus?id=0")
+                else:
+                    er = self._rget(f"http://{ip}/rpc/EM1Data.GetStatus?id={chan}")
                 if er.status_code == 200:
-                    emdata   = er.json() or {}
-                    total_wh = self._get_total_wh(emdata, "total_act_energy")
+                    emdata = er.json() or {}
+                    total_wh = (self._em_total_wh(emdata) if is_3phase
+                                else self._get_total_wh(emdata, "total_act_energy"))
             except Exception:
                 pass
 
@@ -1995,7 +2103,7 @@ class Plugin(indigo.PluginBase):
                 ]
                 mirror["kwh_today"] = f"{today_kwh:.4f}"
             else:
-                self.logger.debug(f'[{dev.name}] no EMData total_act_energy this poll — energy preserved')
+                self.logger.debug(f'[{dev.name}] no EMData/EM1Data total this poll — energy preserved')
 
             dev.updateStatesOnServer(kv)
             self._mirror_states(dev, mirror)
@@ -2003,7 +2111,9 @@ class Plugin(indigo.PluginBase):
             if emdata:
                 self._capture_unhandled_fields(
                     dev, emdata,
-                    extra_handled={"total_act_energy"},
+                    extra_handled={"total_act", "total_act_energy",
+                                   "a_total_act_energy", "b_total_act_energy",
+                                   "c_total_act_energy"},
                 )
             self._mark_online(dev)
             self.last_polled[dev.id] = time.time()
@@ -2021,15 +2131,20 @@ class Plugin(indigo.PluginBase):
         if not ip:
             return
         try:
-            resp = self._rget(f"http://{ip}/rpc/Light.GetStatus?id=0")
+            # v3.12: poll the profile's actual component — Gen2+ RGBW hardware
+            # answers RGB.GetStatus / RGBW.GetStatus, not Light.GetStatus
+            # (unless configured in the plain "light" profile).
+            component = self._rgbw_set_component(dev, ip)
+            chan = self._pref_int(dev.pluginProps, "channel_id", 0)
+            resp = self._rget(f"http://{ip}/rpc/{component}.GetStatus?id={chan}")
             resp.raise_for_status()
             data       = resp.json()
-            on_state   = bool(data.get("output", False))
-            brightness = int(data.get("brightness", 0))
-            mode       = data.get("mode", "color")
-            rgb        = data.get("rgb",  [0, 0, 0])
-            white      = int(data.get("white",  0))
-            watts      = float(data.get("apower", 0.0))
+            on_state   = bool(data.get("output") or False)
+            brightness = int(data.get("brightness") or 0)
+            mode       = data.get("mode", component.lower())
+            rgb        = data.get("rgb") or [0, 0, 0]
+            white      = int(data.get("white") or 0)
+            watts      = float(data.get("apower") or 0.0)
 
             r = int(rgb[0]) if len(rgb) > 0 else 0
             g = int(rgb[1]) if len(rgb) > 1 else 0
@@ -2065,6 +2180,41 @@ class Plugin(indigo.PluginBase):
     # RPC helpers
     # ---------------------------------------------------------------------------
 
+    def _rgbw_component(self, dev, ip):
+        """Return the Gen2+ colour component family for a shellyRGBW device:
+        'rgb', 'rgbw' or 'light' (v3.12 — verified against the Shelly API docs;
+        NB no RGBW hardware in the dev fleet to live-test). Gen2+ RGBW devices
+        expose rgb:0 / rgbw:0 components depending on their configured profile —
+        the Gen1-era Light.Set colour params the old code sent do not exist on
+        them. Cached on the device props after one Shelly.GetConfig probe."""
+        prof = dev.pluginProps.get("rgbw_profile", "")
+        if prof in ("rgb", "rgbw", "light"):
+            return prof
+        prof = "light"
+        try:
+            resp = self._rget(f"http://{ip}/rpc/Shelly.GetConfig")
+            if resp.status_code != 200:
+                return "light"   # probe inconclusive — don't persist a guess
+            keys = set((resp.json() or {}).keys())
+            if any(k.startswith("rgbw:") for k in keys):
+                prof = "rgbw"
+            elif any(k.startswith("rgb:") for k in keys):
+                prof = "rgb"
+        except Exception:
+            return "light"       # probe failed — don't persist a guess
+        try:
+            props = dict(dev.pluginProps)
+            props["rgbw_profile"] = prof
+            dev.replacePluginPropsOnServer(props)
+        except Exception:
+            pass
+        return prof
+
+    def _rgbw_set_component(self, dev, ip):
+        """RPC component name for Set/GetStatus calls on a shellyRGBW device."""
+        return {"rgb": "RGB", "rgbw": "RGBW"}.get(
+            self._rgbw_component(dev, ip), "Light")
+
     @staticmethod
     def _pref_int(prefs, key, default):
         """Coerce a pref/prop value to int, falling back (coerced) on blank/non-numeric.
@@ -2077,6 +2227,20 @@ class Plugin(indigo.PluginBase):
             return int(prefs.get(key, default))
         except (ValueError, TypeError):
             return int(default)
+
+    @staticmethod
+    def _em_total_wh(emdata):
+        """Cumulative Wh from a 3-phase EMData.GetStatus payload. Prefers the
+        documented `total_act`; falls back to summing the per-phase totals when
+        ALL three are present (v3.12 — never fabricate a partial sum)."""
+        total = Plugin._get_total_wh(emdata, "total_act")
+        if total is not None:
+            return total
+        phases = [Plugin._get_total_wh(emdata, f"{p}_total_act_energy")
+                  for p in ("a", "b", "c")]
+        if all(v is not None for v in phases):
+            return float(sum(phases))
+        return None
 
     @staticmethod
     def _get_total_wh(container, key):
@@ -2105,9 +2269,11 @@ class Plugin(indigo.PluginBase):
 
     def _set_output(self, dev, ip, on):
         """Dispatch on/off to the correct RPC component for this device type."""
-        chan = int(dev.pluginProps.get("channel_id", 0))
+        chan = self._pref_int(dev.pluginProps, "channel_id", 0)
         if dev.deviceTypeId in LIGHT_TYPES:
-            return self._light_set(ip, chan, on=on)
+            component = ("Light" if dev.deviceTypeId != "shellyRGBW"
+                         else self._rgbw_set_component(dev, ip))
+            return self._light_set(ip, chan, on=on, component=component)
         return self._switch_set(ip, chan, on, dev.name)
 
     def _switch_set(self, ip, channel_id, on, dev_name=""):
@@ -2124,16 +2290,19 @@ class Plugin(indigo.PluginBase):
             log(f'[{dev_name}] Command failed: {exc}', level="ERROR")
         return False
 
-    def _light_set(self, ip, channel_id, on, brightness=None):
+    def _light_set(self, ip, channel_id, on, brightness=None, component="Light"):
+        """Set on/brightness via the device's RPC component. component is
+        'Light' for dimmers, 'RGB'/'RGBW' for Gen2+ colour devices (v3.12 —
+        those profiles don't answer Light.Set)."""
         try:
             params = {"id": channel_id, "on": "true" if on else "false"}
             if brightness is not None:
                 params["brightness"] = brightness
-            resp = self._rget(f"http://{ip}/rpc/Light.Set", params=params)
+            resp = self._rget(f"http://{ip}/rpc/{component}.Set", params=params)
             resp.raise_for_status()
             return True
         except Exception as exc:
-            log(f'Light.Set failed ({ip}): {exc}', level="ERROR")
+            log(f'{component}.Set failed ({ip}): {exc}', level="ERROR")
             return False
 
     def _cover_cmd(self, dev_id, rpc_method):
@@ -2142,7 +2311,10 @@ class Plugin(indigo.PluginBase):
             ip  = dev.pluginProps.get("ip_address", "").strip()
             if not ip:
                 return
-            resp = self._rget(f"http://{ip}/rpc/{rpc_method}?id=0")
+            # v3.12: honour the device's channel (multi-cover devices exist now
+            # that per-channel creation covers every channel-addressable type).
+            chan = self._pref_int(dev.pluginProps, "channel_id", 0)
+            resp = self._rget(f"http://{ip}/rpc/{rpc_method}?id={chan}")
             resp.raise_for_status()
             log(f'[{dev.name}] {rpc_method}')
             self.last_polled[dev_id] = 0   # Trigger immediate poll on next tick
@@ -2393,8 +2565,28 @@ class Plugin(indigo.PluginBase):
             if "day_baseline_wh" not in entry or total_wh < entry.get("day_baseline_wh", 0):
                 entry["day_baseline_wh"] = total_wh
                 entry["day_date"]        = today_str
+            elif entry.get("day_date") != today_str:
+                # v3.12: this device MISSED its _midnight_reset (offline at the
+                # boundary, or the plugin was down). The old code kept
+                # accumulating onto the stale baseline — yesterday's usage
+                # leaked into today's figure and the history row was lost.
+                # Roll over in place: bank the elapsed period as one history
+                # row against the recorded day_date (best effort — includes any
+                # post-midnight usage up to now), then re-baseline.
+                stale_kwh = max(0.0, (total_wh - entry.get("day_baseline_wh", total_wh)) / 1000.0)
+                entry.setdefault("history", []).append({
+                    "date": entry.get("day_date", ""),
+                    "kwh":  round(stale_kwh, 4),
+                })
+                entry["history"] = entry["history"][-HISTORY_DAYS:]
+                entry["day_baseline_wh"] = total_wh
+                entry["day_date"]        = today_str
 
             if "month_baseline_wh" not in entry or total_wh < entry.get("month_baseline_wh", 0):
+                entry["month_baseline_wh"] = total_wh
+                entry["month_date"]        = month_str
+            elif entry.get("month_date") != month_str:
+                # Same in-place rollover for the month boundary (v3.12).
                 entry["month_baseline_wh"] = total_wh
                 entry["month_date"]        = month_str
 
@@ -2417,9 +2609,16 @@ class Plugin(indigo.PluginBase):
                 continue
             try:
                 if dev.deviceTypeId == "shellyEM":
-                    er = self._rget(f"http://{ip}/rpc/EMData.GetStatus?id=0")
-                    total_wh = self._get_total_wh(er.json() or {}, "total_act_energy") \
-                               if er.status_code == 200 else None
+                    # v3.12: component-correct energy reads (see _poll_em).
+                    if dev.pluginProps.get("is_3phase", False):
+                        er = self._rget(f"http://{ip}/rpc/EMData.GetStatus?id=0")
+                        total_wh = self._em_total_wh(er.json() or {}) \
+                                   if er.status_code == 200 else None
+                    else:
+                        emchan = self._pref_int(dev.pluginProps, "channel_id", 0)
+                        er = self._rget(f"http://{ip}/rpc/EM1Data.GetStatus?id={emchan}")
+                        total_wh = self._get_total_wh(er.json() or {}, "total_act_energy") \
+                                   if er.status_code == 200 else None
                 else:
                     chan = self._pref_int(dev.pluginProps, "channel_id", 0)
                     sr   = self._rget(f"http://{ip}/rpc/Switch.GetStatus?id={chan}")
@@ -2807,9 +3006,18 @@ class Plugin(indigo.PluginBase):
                     skipped.append(ip)
                     continue
 
-                # Multi-channel: check for cover mode first
-                if num_ch > 1 and base_type == "shellyRelay":
-                    if self._is_cover_mode(ip):
+                # EM special case: num_ch == 3 encodes the 3-PHASE profile
+                # (Pro 3EM family) — that is ONE device, not three channels.
+                em_3phase = (base_type == "shellyEM" and num_ch == 3)
+
+                # Multi-channel: one Indigo device per channel for EVERY
+                # channel-addressable type (v3.12 — the old gate applied only
+                # to shellyRelay, so a Pro Dimmer 2PM or a multi-EM1 device
+                # silently lost every channel but the first). Relay types
+                # still get the cover-mode probe first: a multi-relay Shelly
+                # in cover profile becomes ONE cover device.
+                if num_ch > 1 and not em_3phase:
+                    if base_type == "shellyRelay" and self._is_cover_mode(ip):
                         dev_name = self._build_device_name(name, label + " Cover", ip)
                         new_dev  = self._create_device(
                             ip, "shellyCover", False, dev_name, folder_id,
@@ -2823,13 +3031,17 @@ class Plugin(indigo.PluginBase):
                             )
                         continue
 
-                    # Create N relay devices, one per channel
+                    # Create N devices, one per channel
                     for ch in range(num_ch):
                         suffix   = f" Ch{ch + 1}"
                         dev_name = self._build_device_name(name, label, ip, suffix)
+                        extra    = {"channel_id": str(ch), "mac_address": mac}
+                        if base_type == "shellyEM":
+                            extra["is_3phase"] = False   # multi-channel EM = EM1 components
+                        if base_type == "shellyCover":
+                            extra["poll_interval"] = "10"
                         new_dev  = self._create_device(
-                            ip, base_type, has_pm, dev_name, folder_id,
-                            {"channel_id": str(ch), "mac_address": mac}
+                            ip, base_type, has_pm, dev_name, folder_id, extra
                         )
                         if new_dev:
                             created.append(new_dev.name)
@@ -2843,7 +3055,7 @@ class Plugin(indigo.PluginBase):
                 dev_name = self._build_device_name(name, label, ip)
                 extra    = {"mac_address": mac}
                 if base_type == "shellyEM":
-                    extra["is_3phase"] = (num_ch == 3)
+                    extra["is_3phase"] = em_3phase
                 if base_type == "shellyCover":
                     extra["poll_interval"] = "10"
 
