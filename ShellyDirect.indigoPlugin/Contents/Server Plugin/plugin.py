@@ -5,7 +5,38 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Fable 5
 # Date:        17-07-2026
-# Version:     3.13
+# Version:     3.14
+#
+# v3.14 (17-07-2026) — Fable 5 deep-review batch 3 (lows + infos).
+#   * Instantaneous relay readings (apower/voltage/current/tC) written only
+#     when PRESENT — partial responses fabricated 0 W/0 V readings (the
+#     non-energy edition of the v3.6 phantom-zero class).
+#   * Webhook.Create responses checked — a failed create (20-hook cap) used to
+#     log 'Webhooks OK' anyway; menuResetWebhooks reports a REAL device count
+#     (_configure_webhooks now returns a result).
+#   * Webhook poll stamping: a light webhook queues an immediate poll
+#     (brightness isn't in the event — it stayed stale a full interval); a PM
+#     relay's switch webhook keeps the poll cadence (frequent toggling used to
+#     defer power/energy polling indefinitely).
+#   * runConcurrentThread's WHOLE tick body guarded (a non-StopThread error
+#     outside the device loop silently killed polling); deviceStartComm's
+#     initial poll + webhook configure moved to a worker thread (startup used
+#     to stall serially on offline devices).
+#   * _is_cover_mode returns inconclusive on network failure — a transient
+#     timeout used to permanently misclassify a 2PM as two relays; discovery
+#     retries next run.
+#   * Duplicate guard catches mixed identities (an IP-only record now adopts
+#     the MAC another record stores for the same IP).
+#   * _poll_i4 tolerates fewer than 4 inputs (component-classified devices).
+#   * New props RMW lock (MAC backfill vs dynamic capture); energy CSV export
+#     snapshots under the energy lock; energy JSON carries last_date in
+#     __meta__ so the midnight boundary survives a CRASH (pluginPrefs only
+#     flush on graceful shutdown).
+#   * shellyHT gains a declared temperature state (its reading previously
+#     landed only in the dead sensorValue); brightnessLevel declarations
+#     removed from the two dimmer types (natively reserved — same class as
+#     the v3.10 sensorValue cleanup); PluginConfig double separator replaced
+#     by the new battery_stale_hours field.
 #
 # v3.13 (17-07-2026) — Fable 5 deep-review batch 2 (mediums).
 #   * Webhook event handling EXTRACTED from the HTTP-handler closure into
@@ -501,12 +532,20 @@ class Plugin(indigo.PluginBase):
         self.last_seen            = {}   # {dev_id: float}
         self.fail_count           = {}   # {dev_id: int}  consecutive poll failures
         self._webhook_repairs     = {}   # {shelly_ip: ts} stale-devId repair rate limit (v3.13)
+        # Serialises pluginProps read-modify-write cycles between the MAC
+        # backfill thread and the poll thread's dynamic-state capture —
+        # deliberately held across replacePluginPropsOnServer: an
+        # interleaved RMW silently drops one side's changes (v3.14).
+        self._props_lock          = threading.RLock()
         self.webhook_server       = None
         self.energy_data          = {}   # {str(dev_id): {...baselines + history...}}
         self._energy_lock         = threading.RLock()  # guards energy_data RMW across threads
         # last_date persisted across restarts so a restart spanning midnight still
         # triggers the daily reset on the first tick (network available), instead of
         # silently skipping it because __init__ seeded today.
+        # v3.14: the energy JSON's __meta__.last_date is authoritative — it is
+        # written atomically with the baselines it describes, and survives a
+        # CRASH (pluginPrefs only flush to disk on a graceful shutdown).
         self.last_date            = prefs.get("lastEnergyDate") or str(date.today())
         self.power_alert_active   = {}   # {dev_id: bool}
         self.triggers             = []   # active Indigo trigger objects
@@ -543,10 +582,18 @@ class Plugin(indigo.PluginBase):
         self.last_polled[dev.id] = 0
         self.last_seen[dev.id]   = time.time()
         dev.updateStateOnServer("deviceOnline", True)
-        # BLU devices are pure-event Bluetooth peripherals — nothing to poll directly
-        if dev.deviceTypeId not in BLU_TYPES:
-            self._poll_device(dev)
-        self._configure_webhooks(dev)
+        # v3.14: the initial poll + webhook configure moved OFF the lifecycle
+        # thread — with several offline devices, plugin startup used to stall
+        # for (devices x timeout) seconds doing serial blocking network I/O.
+        def _start_net():
+            try:
+                # BLU devices are pure-event Bluetooth peripherals — no direct poll
+                if dev.deviceTypeId not in BLU_TYPES:
+                    self._poll_device(dev)
+                self._configure_webhooks(dev)
+            except Exception as exc:
+                self.logger.debug(f"[{dev.name}] startComm network init: {exc}")
+        threading.Thread(target=_start_net, daemon=True).start()
         # Backfill MAC address for existing devices that pre-date MAC storage.
         # Guard: only run if mac_address not yet stored, avoiding recursive trigger
         # from replacePluginPropsOnServer inside _backfill_mac.
@@ -925,6 +972,10 @@ class Plugin(indigo.PluginBase):
     def runConcurrentThread(self):
         try:
             while True:
+              # v3.14: the WHOLE tick body is guarded — a non-StopThread
+              # exception outside the per-device loop (e.g. devices.iter
+              # hiccup) used to kill polling silently for the rest of the run.
+              try:
                 today_str = str(date.today())
                 if today_str != self.last_date:
                     try:
@@ -933,10 +984,14 @@ class Plugin(indigo.PluginBase):
                         log(f"Midnight reset error: {exc}", level="ERROR")
                     self.last_date = today_str
                     self.pluginPrefs["lastEnergyDate"] = today_str   # survive a restart
+                    with self._energy_lock:                          # survive a CRASH (v3.14)
+                        self.energy_data.setdefault("__meta__", {})["last_date"] = today_str
 
                 now = time.time()
 
-                # Webhook health check every 6 hours
+                # Webhook health check every 6 hours (v3.14: the pre-loop tick
+                # body is guarded further below via the per-device try; the
+                # scheduling block itself is simple arithmetic)
                 if (now - self.last_webhook_check) >= 21600:
                     self.last_webhook_check = now
                     threading.Thread(
@@ -974,8 +1029,12 @@ class Plugin(indigo.PluginBase):
                             self._poll_device(dev)
                     except Exception as exc:
                         log(f'poll loop error "{getattr(dev, "name", "?")}": {exc}', level="WARNING")
+              except self.StopThread:
+                raise
+              except Exception as exc:
+                log(f"poll tick error: {exc}", level="WARNING")
 
-                self.sleep(10)
+              self.sleep(10)
         except self.StopThread:
             pass
 
@@ -1011,9 +1070,11 @@ class Plugin(indigo.PluginBase):
 
     def menuResetWebhooks(self, values_dict=None, type_id=""):
         log("Reconfiguring webhooks on all devices ...")
+        # v3.14: _configure_webhooks returns True when it actually ran —
+        # the old `is not None` test counted a bare None return as 0 devices.
         count = sum(1 for dev in indigo.devices.iter("self")
                     if dev.enabled and dev.configured
-                    and self._configure_webhooks(dev) is not None)
+                    and self._configure_webhooks(dev))
         log(f"Webhook reconfiguration complete ({count} device(s))")
         return True
 
@@ -1074,7 +1135,10 @@ class Plugin(indigo.PluginBase):
                 writer = csv.writer(f)
                 writer.writerow(["Date", "Device", "kWh"])
 
-                for dev_id_str, entry in self.energy_data.items():
+                with self._energy_lock:
+                    energy_snapshot = {k: dict(v) for k, v in self.energy_data.items()}
+                energy_snapshot.pop("__meta__", None)
+                for dev_id_str, entry in energy_snapshot.items():
                     try:
                         dev  = indigo.devices[int(dev_id_str)]
                         name = dev.name
@@ -1139,7 +1203,11 @@ class Plugin(indigo.PluginBase):
 
         if ev_type == "switch" and state in ("on", "off"):
             target.updateStateOnServer("onOffState", state == "on")
-            self.last_polled[dev_id] = time.time()
+            # v3.14: only NON-PM relays may defer their poll — a PM device's
+            # poll also carries power/energy, and frequent toggling used to
+            # defer it indefinitely.
+            if not target.pluginProps.get("has_pm", True):
+                self.last_polled[dev_id] = time.time()
             self.logger.debug(f'[webhook] "{target.name}" switch -> {state}')
 
         elif ev_type == "button":
@@ -1168,8 +1236,10 @@ class Plugin(indigo.PluginBase):
 
         elif ev_type == "light" and state in ("on", "off"):
             target.updateStateOnServer("onOffState", state == "on")
-            self.last_polled[dev_id] = time.time()
-            self.logger.debug(f'[webhook] "{target.name}" light -> {state}')
+            # v3.14: force a prompt poll — brightness isn't in the webhook, and
+            # stamping last_polled here left it stale for a full interval.
+            self.last_polled[dev_id] = 0
+            self.logger.debug(f'[webhook] "{target.name}" light -> {state} - poll queued')
 
         elif ev_type == "ht":
             temp = self._qp_float(params, "tC")
@@ -1178,6 +1248,10 @@ class Plugin(indigo.PluginBase):
             kv, mirror = [], {}
             if temp is not None:
                 kv.append({"key": "sensorValue", "value": temp,
+                           "uiValue": f"{temp:.1f} C"})
+                # v3.14: also the declared temperature state — sensorValue is
+                # dead on sensor types until the Supports* completion lands.
+                kv.append({"key": "temperature", "value": temp,
                            "uiValue": f"{temp:.1f} C"})
                 mirror["temp_c"] = f"{temp:.1f}"
             if hum is not None:
@@ -1394,7 +1468,7 @@ class Plugin(indigo.PluginBase):
         ip      = dev.pluginProps.get("ip_address", "").strip()
         type_id = dev.deviceTypeId
         if not ip:
-            return
+            return False
         if not self.server_ip:
             # v3.13: without the Indigo server IP the URLs would be
             # 'http://:8178/...' — the device accepts them and then fires
@@ -1402,11 +1476,11 @@ class Plugin(indigo.PluginBase):
             log(f'[{dev.name}] Webhooks skipped - no Indigo server IP '
                 f'configured (set it in IndigoSecrets.py or the plugin config)',
                 level="WARNING")
-            return
+            return False
         if dev.id in self._dup_ids_cached():
             self.logger.debug(f'[{dev.name}] webhook configure skipped — '
                               f'duplicate record (see health-check warning)')
-            return
+            return False
 
         base = f"http://{self.server_ip}:{WEBHOOK_PORT}/shellyEvent?devId={dev.id}"
         chan = self._pref_int(dev.pluginProps, "channel_id", 0)
@@ -1499,6 +1573,8 @@ class Plugin(indigo.PluginBase):
             # Uses a separate handler path to avoid interfering with the gateway's
             # own relay/switch webhooks.
             self._configure_blu_webhooks(ip, dev)
+
+        return True   # configuration dispatched (v3.14 — the menu counts on this)
 
     def _configure_blu_webhooks(self, ip, dev):
         """Register bthomedevice press-event webhooks on the BLE gateway for this BLU device.
@@ -1614,16 +1690,36 @@ class Plugin(indigo.PluginBase):
                 except Exception as exc:
                     log(f'[{dev.name}] Could not delete stale hook {hook_id}: {exc}', level="WARNING")
 
+            failed = 0
             for event, url, cid in wanted:
                 if url not in have_urls:
-                    self._rget(
+                    cresp = self._rget(
                         f"http://{ip}/rpc/Webhook.Create",
                         params={"cid": cid, "enable": "true",
                                 "event": event, "urls": json.dumps([url])}
                     )
-                    self.logger.debug(f'[{dev.name}] Created {event} webhook (cid={cid})')
+                    # v3.14: a failed create used to be invisible — 'Webhooks
+                    # OK' was logged anyway. input.* rejections are EXPECTED on
+                    # hardware without an input component (plugs) — those log
+                    # at debug; failures on the device's primary events WARN.
+                    if cresp.status_code != 200 or "code" in (cresp.json() or {}):
+                        if event.startswith("input."):
+                            self.logger.debug(
+                                f'[{dev.name}] {event} webhook not supported '
+                                f'(no input component on this hardware)')
+                        else:
+                            failed += 1
+                            self.logger.warning(
+                                f'[{dev.name}] Webhook.Create failed for {event} '
+                                f'(hook cap reached?)')
+                    else:
+                        self.logger.debug(f'[{dev.name}] Created {event} webhook (cid={cid})')
 
-            log(f'[{dev.name}] Webhooks OK')
+            if failed:
+                log(f'[{dev.name}] Webhooks partially configured — {failed} create(s) '
+                    f'failed', level="WARNING")
+            else:
+                log(f'[{dev.name}] Webhooks OK')
 
         except requests.exceptions.ConnectionError:
             log(f'[{dev.name}] Webhook setup failed - no route to {ip} - poll-only', level="WARNING")
@@ -1683,7 +1779,8 @@ class Plugin(indigo.PluginBase):
         bucket key includes channel_id. BLU devices legitimately share the BLE
         gateway IP, so they're excluded entirely.
         """
-        buckets = {}
+        candidates = []
+        mac_by_ip  = {}
         for dev in indigo.devices.iter("self"):
             if not dev.enabled or not dev.configured:
                 continue
@@ -1692,7 +1789,16 @@ class Plugin(indigo.PluginBase):
             mac     = dev.pluginProps.get("mac_address", "").strip().upper()
             ip      = dev.pluginProps.get("ip_address",  "").strip()
             channel = str(dev.pluginProps.get("channel_id", "0"))
-            ident   = mac or ip                      # MAC preferred, IP as fallback
+            candidates.append((dev, mac, ip, channel))
+            if mac and ip:
+                mac_by_ip[ip] = mac
+
+        buckets = {}
+        for dev, mac, ip, channel in candidates:
+            # v3.14: an IP-only record adopts the MAC another record stores for
+            # the same IP — the mixed-identity duplicate (one record with MAC,
+            # one without) used to land in different buckets and escape.
+            ident = mac or mac_by_ip.get(ip) or ip
             if not ident:
                 continue
             buckets.setdefault((ident, channel), []).append(dev)
@@ -1935,22 +2041,27 @@ class Plugin(indigo.PluginBase):
             mirror   = {"on": str(on_state)}
 
             if has_pm:
-                watts    = float(data.get("apower")  or 0.0)
-                voltage  = float(data.get("voltage") or 0.0)
-                current  = float(data.get("current") or 0.0)
-                temp_c   = float((data.get("temperature") or {}).get("tC", 0.0))
+                # v3.14: instantaneous readings are written only when PRESENT —
+                # a partial response used to fabricate 0 W / 0 V readings (the
+                # non-energy edition of the v3.6 phantom-zero class).
+                watts   = self._get_total_wh(data, "apower")
+                voltage = self._get_total_wh(data, "voltage")
+                current = self._get_total_wh(data, "current")
+                temp_c  = self._get_total_wh(data.get("temperature") or {}, "tC")
 
-                kv += [
-                    {"key": "powerWatts",        "value": watts,
-                     "uiValue": f"{watts:.1f} W"},
-                    {"key": "voltage",            "value": voltage,
-                     "uiValue": f"{voltage:.1f} V"},
-                    {"key": "currentAmps",       "value": current,
-                     "uiValue": f"{current:.3f} A"},
-                    {"key": "deviceTempC",      "value": temp_c,
-                     "uiValue": f"{temp_c:.1f} C"},
-                ]
-                mirror["watts"] = f"{watts:.1f}"
+                if watts is not None:
+                    kv.append({"key": "powerWatts", "value": watts,
+                               "uiValue": f"{watts:.1f} W"})
+                    mirror["watts"] = f"{watts:.1f}"
+                if voltage is not None:
+                    kv.append({"key": "voltage", "value": voltage,
+                               "uiValue": f"{voltage:.1f} V"})
+                if current is not None:
+                    kv.append({"key": "currentAmps", "value": current,
+                               "uiValue": f"{current:.3f} A"})
+                if temp_c is not None:
+                    kv.append({"key": "deviceTempC", "value": temp_c,
+                               "uiValue": f"{temp_c:.1f} C"})
 
                 # Energy is cumulative — only update from a REAL reading. A missing
                 # aenergy.total (partial response, mid-reboot) must not fabricate a 0,
@@ -2158,8 +2269,13 @@ class Plugin(indigo.PluginBase):
         try:
             for i in range(4):
                 resp = self._rget(f"http://{ip}/rpc/Input.GetStatus?id={i}")
-                resp.raise_for_status()
-                val = bool(resp.json().get("state", False))
+                if resp.status_code != 200:
+                    # v3.14: component-classified input devices may expose
+                    # fewer than 4 inputs — a missing id is fine, not an error.
+                    if i == 0:
+                        resp.raise_for_status()   # no inputs at all IS an error
+                    break
+                val = bool(resp.json().get("state") or False)
                 key = "sensorValue" if i == 0 else f"input{i}"
                 kv.append({"key": key, "value": val})
                 mirror[f"input{i}"] = str(val)
@@ -2602,9 +2718,10 @@ class Plugin(indigo.PluginBase):
 
         if new_keys:
             try:
-                new_props = dict(dev.pluginProps)
-                new_props["seenDynamicKeys"] = ",".join(sorted(seen))
-                dev.replacePluginPropsOnServer(new_props)
+                with self._props_lock:   # atomic RMW vs the MAC backfill (v3.14)
+                    new_props = dict(dev.pluginProps)
+                    new_props["seenDynamicKeys"] = ",".join(sorted(seen))
+                    dev.replacePluginPropsOnServer(new_props)
                 indigo.devices[dev.id].stateListOrDisplayStateIdChanged()
                 log(f'[{dev.name}] imported {len(new_keys)} new field(s): {new_keys}')
             except Exception as e:
@@ -2713,6 +2830,9 @@ class Plugin(indigo.PluginBase):
             if os.path.exists(path):
                 with open(path, encoding="utf-8") as f:
                     self.energy_data = json.load(f)
+                meta = self.energy_data.get("__meta__", {})
+                if isinstance(meta, dict) and meta.get("last_date"):
+                    self.last_date = meta["last_date"]
                 self.logger.debug(f"Energy data loaded ({len(self.energy_data)} device(s))")
         except Exception as exc:
             log(f"Could not load energy data: {exc} - starting fresh", level="WARNING")
@@ -3031,9 +3151,10 @@ class Plugin(indigo.PluginBase):
             if resp.status_code == 200:
                 mac = resp.json().get("mac", "").strip()
                 if mac:
-                    new_props = dict(dev.pluginProps)
-                    new_props["mac_address"] = mac
-                    dev.replacePluginPropsOnServer(new_props)
+                    with self._props_lock:   # atomic RMW vs dynamic capture (v3.14)
+                        new_props = dict(dev.pluginProps)
+                        new_props["mac_address"] = mac
+                        dev.replacePluginPropsOnServer(new_props)
                     self.logger.debug(f"[{dev.name}] MAC backfilled: {mac}")
         except Exception as exc:
             self.logger.debug(f"[{dev.name}] MAC backfill failed: {exc}")
@@ -3052,15 +3173,17 @@ class Plugin(indigo.PluginBase):
         return name
 
     def _is_cover_mode(self, ip):
-        """Return True if this device is configured in cover mode."""
+        """Return True/False for a definitive answer, None when INCONCLUSIVE
+        (v3.14 — a transient timeout on the flaky subnet used to read as
+        'not cover mode' and permanently misclassify a 2PM as two relays;
+        discovery now skips the device this run and retries next time)."""
         try:
             resp = self._rget(f"http://{ip}/rpc/Cover.GetStatus?id=0", timeout=2)
             if resp.status_code == 200:
-                data = resp.json()
-                return "state" in data
+                return "state" in resp.json()
+            return False   # answered, not a cover profile
         except Exception:
-            pass
-        return False
+            return None    # unreachable — don't guess
 
     def _create_device(self, ip, type_id, has_pm, name, folder_id, extra_props=None):
         props = {
@@ -3237,7 +3360,14 @@ class Plugin(indigo.PluginBase):
                 # still get the cover-mode probe first: a multi-relay Shelly
                 # in cover profile becomes ONE cover device.
                 if num_ch > 1 and not em_3phase:
-                    if base_type == "shellyRelay" and self._is_cover_mode(ip):
+                    cover_mode = (self._is_cover_mode(ip)
+                                  if base_type == "shellyRelay" else False)
+                    if cover_mode is None:
+                        log(f"[Discovery] {ip:<18} cover-mode probe inconclusive "
+                            f"(device unreachable) -- skipped this run")
+                        skipped.append(ip)
+                        continue
+                    if cover_mode:
                         dev_name = self._build_device_name(name, label + " Cover", ip)
                         new_dev  = self._create_device(
                             ip, "shellyCover", False, dev_name, folder_id,

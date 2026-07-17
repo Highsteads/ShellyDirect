@@ -307,11 +307,9 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="brightnessLevel">
-				<ValueType>Integer</ValueType>
-				<TriggerLabel>Brightness (0-100)</TriggerLabel>
-				<ControlPageLabel>Brightness</ControlPageLabel>
-			</State>
+			<!-- brightnessLevel is a NATIVE dimmer state — the explicit
+			     declaration was rejected by Indigo at startup (v3.14; same
+			     class as the v3.10 sensorValue cleanup on sensor types). -->
 			<State id="powerWatts">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Power (W)</TriggerLabel>
@@ -347,6 +345,11 @@
 			</Field>
 		</ConfigUI>
 		<States>
+			<State id="temperature">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Temperature (C)</TriggerLabel>
+				<ControlPageLabel>Temperature</ControlPageLabel>
+			</State>
 			<State id="humidity">
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Humidity (%)</TriggerLabel>
@@ -725,11 +728,9 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="brightnessLevel">
-				<ValueType>Integer</ValueType>
-				<TriggerLabel>Brightness (0-100)</TriggerLabel>
-				<ControlPageLabel>Brightness</ControlPageLabel>
-			</State>
+			<!-- brightnessLevel is a NATIVE dimmer state — the explicit
+			     declaration was rejected by Indigo at startup (v3.14; same
+			     class as the v3.10 sensorValue cleanup on sensor types). -->
 			<State id="redLevel">
 				<ValueType>Integer</ValueType>
 				<TriggerLabel>Red (0-255)</TriggerLabel>

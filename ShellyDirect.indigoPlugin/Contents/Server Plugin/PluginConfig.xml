@@ -49,6 +49,15 @@ Read from IndigoSecrets.SHELLY_USERNAME / SHELLY_PASSWORD first; these fields ar
 
 	<Field id="sep3" type="separator"/>
 
+	<!-- ── Offline detection ─────────────────────────────────────────────── -->
+
+	<Field id="battery_stale_hours" type="textfield" defaultValue="12">
+		<Label>Battery Sensor Stale Threshold (hours):</Label>
+	</Field>
+	<Field id="hlpBatteryStale" type="label" fontSize="mini" alignWithControl="true">
+		<Label>Push-only battery sensors (H&amp;T, Smoke, Flood) report hourly or only on change. They are marked offline after this many quiet hours (mains devices use the minutes setting above). Default 12.</Label>
+	</Field>
+
 	<Field id="sep4" type="separator"/>
 
 	<!-- ── Firmware Notifications ───────────────────────────────────────── -->

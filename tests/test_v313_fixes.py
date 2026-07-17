@@ -88,10 +88,19 @@ def _apply_receiver(plugin_mod):
 
 def test_webhook_switch_on(plugin_mod):
     r = _apply_receiver(plugin_mod)
-    dev = FakeDev(1, "Plug")
-    plugin_mod.Plugin._apply_webhook_event(r, dev, _qs({"type": "switch", "state": "on"}))
-    assert dev.states["onOffState"] is True
+    # v3.14 contract: a NON-PM relay's webhook defers its poll (nothing else
+    # to fetch); a PM relay keeps its poll cadence (power/energy data).
+    non_pm = FakeDev(1, "Plug", props={"has_pm": False})
+    plugin_mod.Plugin._apply_webhook_event(r, non_pm,
+                                           _qs({"type": "switch", "state": "on"}))
+    assert non_pm.states["onOffState"] is True
     assert 1 in r.last_polled
+
+    pm = FakeDev(2, "PM Plug", props={"has_pm": True})
+    plugin_mod.Plugin._apply_webhook_event(r, pm,
+                                           _qs({"type": "switch", "state": "off"}))
+    assert pm.states["onOffState"] is False
+    assert 2 not in r.last_polled, "PM relay must keep its poll cadence"
 
 
 def test_webhook_uni_input0_writes_input0_state(plugin_mod):
