@@ -38,7 +38,7 @@ Discovery scans .1 to .254 on each subnet. Read from IndigoSecrets.SHELLY_DISCOV
 	<Field id="shelly_username" type="textfield" defaultValue="">
 		<Label>Shelly Username:</Label>
 	</Field>
-	<Field id="shelly_password" type="textfield" defaultValue="">
+	<Field id="shelly_password" type="textfield" secure="true" defaultValue="">
 		<Label>Shelly Password:</Label>
 	</Field>
 	<Field id="hlpAuth" type="label" fontSize="mini" alignWithControl="true">
@@ -50,6 +50,13 @@ Read from IndigoSecrets.SHELLY_USERNAME / SHELLY_PASSWORD first; these fields ar
 	<Field id="sep3" type="separator"/>
 
 	<!-- ── Offline detection ─────────────────────────────────────────────── -->
+
+	<Field id="webhook_port" type="textfield" defaultValue="8178">
+		<Label>Webhook Listener Port:</Label>
+	</Field>
+	<Field id="hlpWebhookPort" type="label" fontSize="mini" alignWithControl="true">
+		<Label>TCP port the plugin listens on for device webhooks. Change only if another service already uses 8178, then reload the plugin (existing webhooks are re-pointed automatically).</Label>
+	</Field>
 
 	<Field id="battery_stale_hours" type="textfield" defaultValue="12">
 		<Label>Battery Sensor Stale Threshold (hours):</Label>

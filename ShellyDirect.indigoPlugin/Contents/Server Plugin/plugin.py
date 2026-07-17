@@ -5,7 +5,34 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Fable 5
 # Date:        17-07-2026
-# Version:     3.14
+# Version:     3.15
+#
+# v3.15 (17-07-2026) — Fable 5 deep-review improvements batch.
+#   * NEW "Test Shelly Connection" menu item (estate convention): full banner
+#     + live checks (listener up, server IP, subnets, every pollable device
+#     probed) in one log dump made for support posts. Show Plugin Info gains
+#     device counts + webhook-listener status (shared _banner_extras).
+#   * Webhook listener port is a guarded pref (webhook_port, default 8178) —
+#     a port collision used to leave the plugin permanently webhook-dead with
+#     no user remedy; existing device hooks re-point automatically on reload.
+#   * requirements.txt emptied: `requests` is pre-installed in Indigo's Python
+#     (FlyingDiver-confirmed) — the old pin dragged a redundant requests +
+#     certifi + urllib3 copy into Contents/Packages/ on every install.
+#     Contents/Packages purged on deploy so imports fall through to Indigo's.
+#   * Discovery: progress line every 64 IPs (sparse subnets used to mean
+#     minutes of silence) and a summary naming configured devices that did
+#     NOT respond to the scan.
+#   * Heavy menu callbacks (Device Health Summary, Check Firmware, Reconfigure
+#     Webhooks, the new connection test) run their serial network I/O in a
+#     worker thread instead of blocking the menu.
+#   * Shelly password field is secure="true" (masked in the dialog — NB Indigo
+#     stores prefs in plain text either way; IndigoSecrets.py remains the
+#     recommended home for credentials).
+#   * plugin_utils.py refreshed from the master (duplicate-filter guard).
+#   * Device-catalogue note: unknown apps are handled by the v3.9 component
+#     classifier (+ v3.13's empty-classification skip and PM probe), so new
+#     Gen3/Gen4 models classify correctly without APP_INFO entries — table
+#     additions deliberately NOT made without verified app strings.
 #
 # v3.14 (17-07-2026) — Fable 5 deep-review batch 3 (lows + infos).
 #   * Instantaneous relay readings (apower/voltage/current/tC) written only
@@ -524,6 +551,9 @@ class Plugin(indigo.PluginBase):
                 level="ERROR",
             )
         self.stale_minutes   = self._pref_int(prefs, "stale_minutes",  10)
+        # v3.15: webhook listener port is configurable — a port collision used
+        # to leave the plugin permanently webhook-dead with no user remedy.
+        self.webhook_port    = self._pref_int(prefs, "webhook_port", WEBHOOK_PORT)
         self.shelly_user     = (_SECRETS_SHELLY_USER or prefs.get("shelly_username", "")).strip()
         self.shelly_pass     = (_SECRETS_SHELLY_PASS or prefs.get("shelly_password", "")).strip()
         self.firmware_notify = prefs.get("firmware_notify_enabled", False)
@@ -1051,6 +1081,11 @@ class Plugin(indigo.PluginBase):
         return True
 
     def menuCheckFirmware(self, values_dict=None, type_id=""):
+        # v3.15: serial network I/O off the menu callback thread
+        threading.Thread(target=self._menu_check_firmware_body, daemon=True).start()
+        return True
+
+    def _menu_check_firmware_body(self, values_dict=None, type_id=""):
         log("Checking firmware versions ...")
         for dev in indigo.devices.iter("self"):
             if not dev.enabled:
@@ -1069,6 +1104,11 @@ class Plugin(indigo.PluginBase):
         return True
 
     def menuResetWebhooks(self, values_dict=None, type_id=""):
+        # v3.15: serial network I/O off the menu callback thread
+        threading.Thread(target=self._menu_reset_webhooks_body, daemon=True).start()
+        return True
+
+    def _menu_reset_webhooks_body(self):
         log("Reconfiguring webhooks on all devices ...")
         # v3.14: _configure_webhooks returns True when it actually ran —
         # the old `is not None` test counted a bare None return as 0 devices.
@@ -1079,6 +1119,11 @@ class Plugin(indigo.PluginBase):
         return True
 
     def menuDeviceHealthSummary(self, values_dict=None, type_id=""):
+        # v3.15: serial network I/O off the menu callback thread
+        threading.Thread(target=self._menu_health_summary_body, daemon=True).start()
+        return True
+
+    def _menu_health_summary_body(self, values_dict=None, type_id=""):
         """Log a formatted table showing status of every managed device."""
         log("-" * 100)
         log(
@@ -1435,13 +1480,13 @@ class Plugin(indigo.PluginBase):
             daemon_threads = True
 
         try:
-            self.webhook_server = ThreadedHTTPServer(("", WEBHOOK_PORT), WebhookHandler)
+            self.webhook_server = ThreadedHTTPServer(("", self.webhook_port), WebhookHandler)
             threading.Thread(
                 target=self.webhook_server.serve_forever, daemon=True
             ).start()
-            log(f"Webhook listener started on port {WEBHOOK_PORT}")
+            log(f"Webhook listener started on port {self.webhook_port}")
         except Exception as exc:
-            log(f"Could not start webhook listener on port {WEBHOOK_PORT}: {exc}", level="ERROR")
+            log(f"Could not start webhook listener on port {self.webhook_port}: {exc} — set a different port in Plugin Config and reload", level="ERROR")
             self.webhook_server = None
 
     # ---------------------------------------------------------------------------
@@ -1482,7 +1527,7 @@ class Plugin(indigo.PluginBase):
                               f'duplicate record (see health-check warning)')
             return False
 
-        base = f"http://{self.server_ip}:{WEBHOOK_PORT}/shellyEvent?devId={dev.id}"
+        base = f"http://{self.server_ip}:{self.webhook_port}/shellyEvent?devId={dev.id}"
         chan = self._pref_int(dev.pluginProps, "channel_id", 0)
 
         if type_id == "shellyRelay":
@@ -1589,7 +1634,7 @@ class Plugin(indigo.PluginBase):
             return
         try:
             bthome_id   = self._pref_int(dev.pluginProps, "bthome_id", 0)
-            blu_url     = f"http://{self.server_ip}:{WEBHOOK_PORT}/shellyBluEvent?devId={dev.id}"
+            blu_url     = f"http://{self.server_ip}:{self.webhook_port}/shellyBluEvent?devId={dev.id}"
 
             # RC4 supports triple_push; single-button BLU does not
             if dev.deviceTypeId == "shellyBluRC4":
@@ -3223,6 +3268,11 @@ class Plugin(indigo.PluginBase):
 
         for i in range(1, 255):
             ip = f"{subnet}.{i}"
+            if i % 64 == 0:
+                # v3.15: progress feedback — a sparse subnet used to mean
+                # minutes of total silence.
+                log(f"[Discovery] {subnet}.x scan progress: {i}/254 "
+                    f"({len(found)} Shelly device(s) so far)")
             try:
                 resp = self._rget(f"http://{ip}/rpc/Shelly.GetDeviceInfo", timeout=1)
                 if resp.status_code != 200:
@@ -3428,6 +3478,19 @@ class Plugin(indigo.PluginBase):
             except Exception:
                 pass
 
+        # v3.15: say which configured devices on this subnet were NOT seen —
+        # discovery used to report only what it found.
+        unseen = []
+        for dev in indigo.devices.iter("self"):
+            if not dev.enabled or dev.deviceTypeId in BLU_TYPES:
+                continue
+            dip = dev.pluginProps.get("ip_address", "").strip()
+            if dip.startswith(f"{subnet}.") and dip not in found and dip not in skipped:
+                unseen.append(f"{dev.name} ({dip})")
+        if unseen:
+            log(f"[Discovery] {len(unseen)} configured device(s) on {subnet}.x did "
+                f"NOT respond: " + ", ".join(sorted(set(unseen))), level="WARNING")
+
         total = len(found)
         if total == 0:
             log(f"Discovery complete: no Shelly devices found on {subnet}.0/24")
@@ -3443,20 +3506,73 @@ class Plugin(indigo.PluginBase):
     # Menu handlers
     # ---------------------------------------------------------------------------
 
-    def showPluginInfo(self, valuesDict=None, typeId=None):
-        extras = [
-            ("Webhook Port:",      str(WEBHOOK_PORT)),
-            ("Discovery Subnets:", self.subnets_raw),
+    def _banner_extras(self):
+        """One source of truth for the diagnostic banner lines — used by both
+        showPluginInfo and Test Shelly Connection (estate convention)."""
+        devs    = [d for d in indigo.devices.iter("self")]
+        online  = sum(1 for d in devs if d.states.get("deviceOnline", False))
+        return [
+            ("Webhook Port:",      str(self.webhook_port)),
+            ("Webhook Listener:",  "running" if getattr(self, "webhook_server", None) else "NOT RUNNING"),
+            ("Indigo Server IP:",  self.server_ip or "(not configured)"),
+            ("Discovery Subnets:", self.subnets_raw or "(not configured)"),
+            ("Devices:",           f"{len(devs)} ({online} online)"),
             ("Auth Enabled:",      "Yes" if self.shelly_user else "No"),
             ("Firmware Notify:",   "Yes" if self.firmware_notify else "No"),
             ("Timestamps in Log:", "ON" if self.timestamp_enabled else "OFF"),
         ]
+
+    def showPluginInfo(self, valuesDict=None, typeId=None):
+        extras = self._banner_extras()
         if log_startup_banner:
             log_startup_banner(self.pluginId, self.pluginDisplayName, self.pluginVersion, extras=extras)
         else:
             indigo.server.log(f"{self.pluginDisplayName} v{self.pluginVersion}")
             for label, value in extras:
                 indigo.server.log(f"  {label} {value}")
+
+    def menuTestConnection(self, values_dict=None, type_id=""):
+        """Menu: full banner + live checks in one log dump (estate convention —
+        exactly what a user pastes into a forum support post). v3.15."""
+        self.showPluginInfo()
+
+        def _run_checks():
+            problems = []
+            if not self.server_ip:
+                problems.append("no Indigo server IP configured (webhooks cannot work)")
+            if not getattr(self, "webhook_server", None):
+                problems.append(f"webhook listener is NOT running on port "
+                                f"{self.webhook_port} (port collision?)")
+            if not self.subnets:
+                problems.append("no discovery subnets configured")
+            devs = [d for d in indigo.devices.iter("self")
+                    if d.enabled and d.configured
+                    and d.deviceTypeId not in BLU_TYPES
+                    and d.deviceTypeId not in PUSH_ONLY_TYPES]
+            unreachable = []
+            for dev in devs:
+                ip = dev.pluginProps.get("ip_address", "").strip()
+                if not ip:
+                    continue
+                try:
+                    r = self._rget(f"http://{ip}/rpc/Shelly.GetDeviceInfo", timeout=2)
+                    if r.status_code != 200:
+                        unreachable.append(f"{dev.name} ({ip}: HTTP {r.status_code})")
+                except Exception:
+                    unreachable.append(f"{dev.name} ({ip}: no route/timeout)")
+            if unreachable:
+                problems.append(f"{len(unreachable)} device(s) unreachable: "
+                                + ", ".join(unreachable))
+            if problems:
+                for pr in problems:
+                    self.logger.error(f"Connection test FAILED — {pr}")
+            else:
+                self.logger.info(f"Connection test PASSED — listener up, all "
+                                 f"{len(devs)} pollable device(s) reachable")
+
+        # Serial network I/O — run off the menu thread (estate rule).
+        threading.Thread(target=_run_checks, daemon=True).start()
+        return True
 
     def menuToggleTimestamps(self):
         self.timestamp_enabled = not self.timestamp_enabled

@@ -1,1 +1,5 @@
-requests>=2.32
+# Zigbee-free plugin: no third-party runtime dependencies.
+# `requests` is PRE-INSTALLED in Indigo's Python environment (confirmed by
+# FlyingDiver for Indigo 2025.2) — the old `requests>=2.32` pin here dragged a
+# redundant copy of requests + certifi + urllib3 into Contents/Packages/ on
+# every install (v3.15). If Indigo ever stops bundling requests, restore the pin.

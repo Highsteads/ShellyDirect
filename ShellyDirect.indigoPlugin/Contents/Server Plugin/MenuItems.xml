@@ -33,6 +33,11 @@
 
 	<MenuItem id="sep1" isSeparator="true"/>
 
+	<MenuItem id="menuTestConnection">
+		<Name>Test Shelly Connection</Name>
+		<CallbackMethod>menuTestConnection</CallbackMethod>
+	</MenuItem>
+
 	<MenuItem id="showPluginInfo">
 		<Name>Show Plugin Info</Name>
 		<CallbackMethod>showPluginInfo</CallbackMethod>
