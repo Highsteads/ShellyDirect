@@ -1,7 +1,9 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
-# Filename:    test_plugin.py
-# Description: Unit tests for ShellyDirect plugin (runs without Indigo installed)
+# Filename:    test_legacy_unit.py
+# Description: Unit tests for ShellyDirect plugin (runs without Indigo installed).
+#              Moved out of the plugin bundle to repo-root tests/ in v3.16.0 —
+#              tests must never ship inside an .indigoPlugin.
 # Author:      CliveS & Claude Sonnet 4.6
 # Date:        23-03-2026
 # Version:     1.0
@@ -58,8 +60,10 @@ sys.modules["indigo"] = indigo_mock
 
 import importlib.util, os
 
-# Build path relative to this test file
-_plugin_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plugin.py")
+# plugin.py lives in the bundle; this file lives in repo-root tests/
+_REPO_ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_plugin_path = os.path.join(_REPO_ROOT, "ShellyDirect.indigoPlugin",
+                            "Contents", "Server Plugin", "plugin.py")
 
 _spec   = importlib.util.spec_from_file_location("plugin", _plugin_path)
 _module = importlib.util.module_from_spec(_spec)

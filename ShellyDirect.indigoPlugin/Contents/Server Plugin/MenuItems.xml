@@ -6,6 +6,11 @@
 		<CallbackMethod>menuDiscoverDevices</CallbackMethod>
 	</MenuItem>
 
+	<MenuItem id="menuShowMdns">
+		<Name>Show mDNS Discovered Shellys</Name>
+		<CallbackMethod>menuShowMdns</CallbackMethod>
+	</MenuItem>
+
 	<MenuItem id="menuDeviceHealthSummary">
 		<Name>Device Health Summary</Name>
 		<CallbackMethod>menuDeviceHealthSummary</CallbackMethod>

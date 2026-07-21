@@ -65,6 +65,13 @@ Read from IndigoSecrets.SHELLY_USERNAME / SHELLY_PASSWORD first; these fields ar
 		<Label>Push-only battery sensors (H&amp;T, Smoke, Flood) report hourly or only on change. They are marked offline after this many quiet hours (mains devices use the minutes setting above). Default 12.</Label>
 	</Field>
 
+	<Field id="mac_verify_minutes" type="textfield" defaultValue="60">
+		<Label>Identity Re-check Interval (minutes):</Label>
+	</Field>
+	<Field id="hlpMacVerify" type="label" fontSize="mini" alignWithControl="true">
+		<Label>How often each device is asked to confirm its MAC address before its data is accepted. This catches a device whose address has been reassigned to something else, and lets the plugin find it again over mDNS. Default 60, minimum 1.</Label>
+	</Field>
+
 	<Field id="sep4" type="separator"/>
 
 	<!-- ── Firmware Notifications ───────────────────────────────────────── -->

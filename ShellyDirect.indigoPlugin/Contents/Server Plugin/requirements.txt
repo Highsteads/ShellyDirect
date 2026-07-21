@@ -3,3 +3,9 @@
 # FlyingDiver for Indigo 2025.2) — the old `requests>=2.32` pin here dragged a
 # redundant copy of requests + certifi + urllib3 into Contents/Packages/ on
 # every install (v3.15). If Indigo ever stops bundling requests, restore the pin.
+
+# zeroconf: mDNS browsing for both Shelly service types (_shelly._tcp on Gen2+,
+# _http._tcp on Gen1). Used to turn a stored MAC back into a current address
+# when a device moves (v3.16.0). The plugin still runs without it — it just
+# cannot find a device that has changed address.
+zeroconf>=0.130.0

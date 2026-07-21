@@ -3,9 +3,43 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Fable 5
-# Date:        17-07-2026
-# Version:     3.15.1
+# Author:      CliveS & Claude Opus 4.8
+# Date:        21-07-2026
+# Version:     3.16.0
+#
+# v3.16.0 (21-07-2026): IDENTITY IS THE MAC ADDRESS, NOT THE IP.
+# The plugin used to treat the stored IP as both "how do I reach this device"
+# and "which device is this". On 21-Jul a plug moved to a new address, the old
+# device kept polling the old one, and for a while two Indigo devices polled the
+# SAME physical plug — cross-writing energy data, recording 3446.6578 kWh for a
+# single day and arming a "~£912" alert downstream in ApplianceMonitor.
+#   * Every device now proves who it is before anything is written: the poll
+#     gate _target_ip() calls Shelly.GetDeviceInfo and compares the returned MAC
+#     with the stored mac_address. On a mismatch NOTHING is written, one warning
+#     names both MACs and the address, and the plugin goes looking for the
+#     device again. Re-checked once an hour per device (mac_verify_minutes).
+#   * mDNS resolution keyed on the MAC. BOTH service types are browsed —
+#     _shelly._tcp (Gen2+, e.g. shellypluspluguk-3c8a1fed1000) and _http._tcp
+#     (Gen1, e.g. shelly1-8CAAB5056390) — because half the fleet only advertises
+#     on one of them. When a MAC turns up at a new address the plugin confirms
+#     it there, rewrites ip_address and logs one INFO line saying it self-healed.
+#   * Absent devices stay quiet. The washing machine and tumble dryer plugs are
+#     switched off at the wall between uses, so unreachable is the NORMAL state
+#     here: relocation is a dictionary lookup, throttled to once per 10 minutes
+#     per device, and adds no log lines. A device that comes back is verified
+#     and picked up on the next tick with no restart.
+#   * Backwards compatible: a device with no stored MAC keeps working on its
+#     stored address and learns its MAC on the next successful check.
+#   * validateDeviceConfigUi now rejects an address+channel already claimed by
+#     another device of this plugin (the lesser safety net — it would not have
+#     caught 21-Jul, because .118 was legitimate until the other plug moved on
+#     to it, but it stops the same wrong config being typed in by hand).
+#   * energy_data.json is pruned against live device ids on startup — 24 of its
+#     44 entries were orphans from devices deleted long ago.
+#   * NEW menu item "Show mDNS Discovered Shellys" lists every advertisement
+#     seen, with the Indigo device it matches.
+#   * test_plugin.py moved OUT of the bundle to repo-root tests/ — tests never
+#     ship. New tests/test_mac_identity.py covers the lot.
 #
 # v3.15.1 (21-07-2026): LOG-LEVEL FIX. indigo.server.log(level=...) wants a Python
 # logging INT — a STRING is silently ignored and the line logs as plain Info.
@@ -357,6 +391,96 @@ HISTORY_DAYS = 30     # Rolling daily energy history retained per device
 MAX_WEBHOOK_REPAIR_FAILS = 3
 
 # ---------------------------------------------------------------------------
+# Identity (v3.16.0)
+#
+# The MAC is the identity; the IP is only the transport. The Indigo Mac sits on
+# a different subnet from the Shellys, so a MAC can never be used to REACH one —
+# but mDNS crosses the VLAN here (proven by ESPHomeBridge), which is enough to
+# turn a MAC back into a current address.
+#
+# Both service types must be browsed. Gen2+ devices advertise _shelly._tcp with
+# an instance name like "shellypluspluguk-3c8a1fed1000"; Gen1 devices advertise
+# _http._tcp with names like "shelly1-8CAAB5056390" and "shellyuni-483FDA829C98".
+# Browsing only one of them leaves half the fleet unfindable.
+# ---------------------------------------------------------------------------
+MDNS_SERVICE_TYPES        = ["_shelly._tcp.local.", "_http._tcp.local."]
+MDNS_REFRESH_INTERVAL     = 300    # seconds between forced re-browses
+MAC_VERIFY_MINUTES        = 60     # default gap between identity re-checks
+IDENTITY_RELOCATE_THROTTLE = 600   # seconds between relocation attempts (offline device)
+IDENTITY_CONFIRM_THROTTLE = 60     # seconds between confirm requests at a new address
+
+
+def normalise_mac(value):
+    """Reduce a MAC to bare upper-case hex, or "" if it is not one.
+
+    Shelly reports "3C8A1FECFC84" over RPC and "3c8a1fed1000" in its mDNS name,
+    and a user may have typed "3c:8a:1f:ec:fc:84" into the device dialog. All
+    three must compare equal.
+    """
+    if not value:
+        return ""
+    cleaned = re.sub(r"[^0-9A-Fa-f]", "", str(value)).upper()
+    return cleaned if len(cleaned) == 12 else ""
+
+
+def mac_from_instance(instance):
+    """Pull the MAC out of an mDNS instance name, or "" if there isn't one.
+
+    Shelly names its advertisements "<model>-<mac>", e.g.
+    "shellypluspluguk-3c8a1fed1000" or "shelly1-8CAAB5056390". Anything that is
+    not a Shelly is ignored, which matters for _http._tcp — every printer and
+    web server on the LAN advertises there too.
+    """
+    if not instance:
+        return ""
+    name = str(instance).split(".")[0].strip()
+    if not name.lower().startswith("shelly"):
+        return ""
+    if "-" not in name:
+        return ""
+    return normalise_mac(name.rsplit("-", 1)[1])
+
+
+def _txt_value(properties, key):
+    """One TXT record value as text, whichever way zeroconf hands it over."""
+    if not properties:
+        return ""
+    raw = properties.get(key)
+    if raw is None:
+        raw = properties.get(key.encode("utf-8"))
+    if raw is None:
+        return ""
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            raw = raw.decode("utf-8", "ignore")
+        except Exception:
+            return ""
+    return str(raw)
+
+
+def mac_from_mdns(name, properties=None):
+    """The MAC of a Shelly advertisement, or "" if it is not one.
+
+    Live survey of this estate (21-07-2026) — what the records actually contain:
+      * Gen1 (_http._tcp) carries TXT id=shelly1-8CAAB5056390, matching its name.
+      * Gen2+ (_shelly._tcp and _http._tcp) carries only gen/app/ver, so the MAC
+        comes from the default instance name shellypluspluguk-3c8a1fed1000.
+      * Gen2+ ALSO advertises a second _shelly._tcp record under the user's own
+        name ("Sonos Woofer Plug") with no MAC anywhere. That one yields nothing,
+        which costs nothing: the same device's default-named record carries it.
+      * Cameras and other kit on _http._tcp publish a TXT 'mac' of their own, so
+        a TXT MAC is only trusted on a record that is already named like a Shelly.
+    """
+    ident = mac_from_instance(_txt_value(properties, "id"))
+    if ident:
+        return ident
+    name_mac = mac_from_instance(name)
+    if not name_mac:
+        return ""
+    return normalise_mac(_txt_value(properties, "mac")) or name_mac
+
+
+# ---------------------------------------------------------------------------
 # APP_INFO  {app_field: (display_label, has_pm, device_type_id, num_channels)}
 # device_type_id matches Devices.xml <Device id="...">
 # num_channels > 1 triggers multi-device creation in discovery
@@ -612,6 +736,20 @@ class Plugin(indigo.PluginBase):
         self.webhook_repair_fails = {}   # {dev_id: int}  consecutive repairs that didn't stick
         self._dup_warned          = set()# MAC/IP+channel keys already warned about as duplicates
 
+        # ── Identity by MAC (v3.16.0) ────────────────────────────────────────
+        self.mac_verify_secs   = max(60, self._pref_int(prefs, "mac_verify_minutes",
+                                                        MAC_VERIFY_MINUTES) * 60)
+        self._mdns_map         = {}   # {MAC: (ip, first_seen_ts, last_seen_ts)}
+        self._mdns_lock        = threading.RLock()
+        self._zc               = None
+        self._zc_browser       = None
+        self._mdns_refreshed   = 0.0  # last forced re-browse
+        self._mac_verified     = {}   # {dev_id: ts of last good identity check}
+        self._identity_bad     = {}   # {dev_id: MAC found instead} - writes refused
+        self._identity_warned  = set()# (dev_id, ip, found_mac) already logged once
+        self._relocate_attempt = {}   # {dev_id: ts} throttles offline relocation
+        self._confirm_attempt  = {}   # {dev_id: ts} throttles confirm-at-new-address
+
         log_level = self._pref_int(prefs, "logLevel", logging.INFO)
         self.indigo_log_handler.setLevel(log_level)
         self._load_energy_data()
@@ -620,10 +758,16 @@ class Plugin(indigo.PluginBase):
 
     def startup(self):
         self._start_webhook_server()
+        self._start_mdns()
+        try:
+            self._prune_energy_data()
+        except Exception as exc:
+            self.logger.debug(f"energy data prune: {exc}")
 
     def shutdown(self):
         log("Shelly Direct plugin stopping")
         self._save_energy_data()
+        self._stop_mdns()
         if self.webhook_server:
             self.webhook_server.shutdown()
             self.webhook_server.server_close()   # release the listening socket FD
@@ -715,7 +859,35 @@ class Plugin(indigo.PluginBase):
             self.shelly_pass     = (_SECRETS_SHELLY_PASS
                                     or values_dict.get("shelly_password", "")).strip()
             self.firmware_notify = values_dict.get("firmware_notify_enabled", False)
+            self.mac_verify_secs = max(60, self._pref_int(values_dict, "mac_verify_minutes",
+                                                          MAC_VERIFY_MINUTES) * 60)
             self.indigo_log_handler.setLevel(self._pref_int(values_dict, "logLevel", logging.INFO))
+
+    def _address_clash(self, ip, values_dict, type_id, dev_id):
+        """Name of another device already on this address, or "".
+
+        A single Shelly legitimately backs several Indigo devices — one per
+        channel on a 2PM, and every BLU button shares its gateway's address — so
+        the test is on address + channel, and only devices with a DIFFERENT MAC
+        count as a clash.
+        """
+        if type_id in BLU_TYPES:
+            return ""
+        chan = str(values_dict.get("channel_id", "0") or "0")
+        mac  = normalise_mac(values_dict.get("mac_address", ""))
+        for dev in indigo.devices.iter("self"):
+            if dev.id == dev_id or dev.deviceTypeId in BLU_TYPES:
+                continue
+            props = dev.pluginProps
+            if props.get("ip_address", "").strip() != ip:
+                continue
+            if str(props.get("channel_id", "0") or "0") != chan:
+                continue
+            other_mac = normalise_mac(props.get("mac_address", ""))
+            if mac and other_mac and mac == other_mac:
+                continue        # genuinely the same physical device
+            return dev.name
+        return ""
 
     def validateDeviceConfigUi(self, values_dict, type_id, dev_id):
         errors = indigo.Dict()
@@ -727,6 +899,14 @@ class Plugin(indigo.PluginBase):
             parts = ip.split(".")
             if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
                 errors["ip_address"] = "Please enter a valid IPv4 address (e.g. 192.168.1.10)."
+            else:
+                clash = self._address_clash(ip, values_dict, type_id, dev_id)
+                if clash:
+                    errors["ip_address"] = (
+                        f"{ip} is already used by \"{clash}\". Two devices sharing an "
+                        f"address poll the same physical Shelly and corrupt each other's "
+                        f"energy figures. Give this one its own address."
+                    )
         if type_id in BLU_TYPES:
             bthome_id = values_dict.get("bthome_id", "").strip()
             if not bthome_id:
@@ -1193,6 +1373,36 @@ class Plugin(indigo.PluginBase):
         log("-" * 100)
         log(f"Total: {seen_n} device(s)")
         return True
+
+    def menuShowMdns(self, values_dict=None, type_id=""):
+        """List every Shelly seen over mDNS and the Indigo device it matches."""
+        with self._mdns_lock:
+            seen = dict(self._mdns_map)
+        if not self._zc:
+            log("mDNS browser is not running - address self-healing is unavailable.",
+                level="WARNING")
+        if not seen:
+            log("No Shelly advertisements seen yet. Gen2+ devices advertise on "
+                "_shelly._tcp and Gen1 on _http._tcp - both are browsed.")
+            self._mdns_refresh()
+            return
+        by_mac = {}
+        for dev in indigo.devices.iter("self"):
+            mac = normalise_mac(dev.pluginProps.get("mac_address", ""))
+            if mac:
+                by_mac.setdefault(mac, dev)
+        log(f"mDNS: {len(seen)} Shelly device(s) advertising")
+        for mac in sorted(seen):
+            ip, _first, last = seen[mac]
+            dev  = by_mac.get(mac)
+            age  = int(time.time() - last)
+            if dev is None:
+                note = "no Indigo device"
+            elif dev.pluginProps.get("ip_address", "").strip() != ip:
+                note = f'{dev.name} - STORED ADDRESS {dev.pluginProps.get("ip_address", "")} IS STALE'
+            else:
+                note = dev.name
+            log(f"  {mac}  {ip:<15}  seen {age}s ago  -  {note}")
 
     def menuExportEnergyHistory(self, values_dict=None, type_id=""):
         """Write 30-day rolling energy history to CSV in ~/Documents/Indigo/ShellyDirect/"""
@@ -1858,7 +2068,7 @@ class Plugin(indigo.PluginBase):
                 continue
             if dev.deviceTypeId in BLU_TYPES:
                 continue
-            mac     = dev.pluginProps.get("mac_address", "").strip().upper()
+            mac     = normalise_mac(dev.pluginProps.get("mac_address", ""))
             ip      = dev.pluginProps.get("ip_address",  "").strip()
             channel = str(dev.pluginProps.get("channel_id", "0"))
             candidates.append((dev, mac, ip, channel))
@@ -2082,6 +2292,283 @@ class Plugin(indigo.PluginBase):
     # Polling dispatch
     # ---------------------------------------------------------------------------
 
+    # ---------------------------------------------------------------------------
+    # Identity by MAC + mDNS resolution (v3.16.0)
+    # ---------------------------------------------------------------------------
+
+    def _start_mdns(self):
+        """Browse both Shelly service types and keep a MAC -> address map.
+
+        zeroconf is optional at runtime: without it the plugin still works, it
+        just cannot find a device that has moved. Say so once and carry on.
+        """
+        try:
+            from zeroconf import Zeroconf, ServiceBrowser
+        except ImportError:
+            log("mDNS is unavailable (the zeroconf package is not installed), so devices "
+                "will only be reached at their stored addresses. Restart the plugin once "
+                "Indigo has installed requirements.txt to enable address self-healing.",
+                level="WARNING")
+            return
+        try:
+            self._zc         = Zeroconf()
+            self._zc_browser = ServiceBrowser(self._zc, list(MDNS_SERVICE_TYPES),
+                                              handlers=[self._on_mdns_change])
+            self.logger.debug(f"mDNS browser started ({', '.join(MDNS_SERVICE_TYPES)})")
+        except Exception as exc:
+            self._zc = self._zc_browser = None
+            log(f"mDNS browser failed to start: {exc}", level="WARNING")
+
+    def _stop_mdns(self):
+        try:
+            if self._zc_browser:
+                self._zc_browser.cancel()
+            if self._zc:
+                self._zc.close()
+        except Exception as exc:
+            self.logger.debug(f"mDNS shutdown: {exc}")
+        finally:
+            self._zc = self._zc_browser = None
+
+    def _on_mdns_change(self, zeroconf=None, service_type="", name="", state_change=None, **_kw):
+        """zeroconf callback, on zeroconf's own thread.
+
+        Resolving the record blocks, so it is handed to a short-lived worker —
+        never do network waits on the browser thread.
+        """
+        try:
+            from zeroconf import ServiceStateChange
+            if state_change is ServiceStateChange.Removed:
+                return
+        except Exception:
+            pass
+        if not mac_from_instance(name):
+            return          # not a Shelly: every printer on the LAN is on _http._tcp
+        threading.Thread(target=self._mdns_resolve,
+                         args=(zeroconf, service_type, name), daemon=True).start()
+
+    def _mdns_resolve(self, zeroconf, service_type, name):
+        try:
+            info = zeroconf.get_service_info(service_type, name, timeout=3000)
+            if not info:
+                return
+            mac = mac_from_mdns(name, getattr(info, "properties", None))
+            if not mac:
+                return
+            for addr in self._mdns_addresses(info):
+                self._mdns_note(mac, addr)
+                return
+        except Exception as exc:
+            self.logger.debug(f"mDNS resolve {name}: {exc}")
+
+    @staticmethod
+    def _mdns_addresses(info):
+        """IPv4 addresses from a zeroconf ServiceInfo, newest API first."""
+        try:
+            addrs = list(info.parsed_addresses())
+        except Exception:
+            addrs = []
+        return [a for a in addrs if a and ":" not in a]
+
+    def _mdns_note(self, mac, ip):
+        """Record a MAC seen at an address. Pure bookkeeping, no network."""
+        mac = normalise_mac(mac)
+        if not mac or not ip:
+            return
+        now = time.time()
+        with self._mdns_lock:
+            first = self._mdns_map.get(mac, (None, now, now))[1]
+            self._mdns_map[mac] = (ip, first, now)
+
+    def _mdns_lookup(self, mac):
+        """Address currently advertised for a MAC, or None.
+
+        A miss nudges a re-browse (throttled) so a device that has just been
+        switched back on at the wall is picked up without a plugin restart.
+        """
+        mac = normalise_mac(mac)
+        if not mac:
+            return None
+        with self._mdns_lock:
+            entry = self._mdns_map.get(mac)
+        if entry:
+            return entry[0]
+        self._mdns_refresh()
+        return None
+
+    def _mdns_refresh(self):
+        """Restart the browser so retained advertisements replay. Throttled."""
+        now = time.time()
+        if (now - self._mdns_refreshed) < MDNS_REFRESH_INTERVAL:
+            return
+        self._mdns_refreshed = now
+        if not self._zc:
+            return
+        try:
+            from zeroconf import ServiceBrowser
+            if self._zc_browser:
+                self._zc_browser.cancel()
+            self._zc_browser = ServiceBrowser(self._zc, list(MDNS_SERVICE_TYPES),
+                                              handlers=[self._on_mdns_change])
+            self.logger.debug("mDNS browser restarted")
+        except Exception as exc:
+            self.logger.debug(f"mDNS refresh: {exc}")
+
+    def _read_device_mac(self, ip):
+        """The MAC reported by whatever answers at this address, or "".
+
+        Gen2+ answers /rpc/Shelly.GetDeviceInfo. Gen1 has no RPC at all and 404s
+        it (live-checked on a Shelly 1, 21-07-2026), but does answer /shelly with
+        a mac, so a Gen1 box sitting on a Gen2 device's address is still named
+        rather than passed off as unreachable.
+        """
+        if not ip:
+            return ""
+        for path in ("/rpc/Shelly.GetDeviceInfo", "/shelly"):
+            try:
+                resp = self._rget(f"http://{ip}{path}")
+                if resp.status_code != 200:
+                    continue
+                mac = str(resp.json().get("mac", "") or "").strip()
+                if mac:
+                    return mac
+            except Exception as exc:
+                self.logger.debug(f"{path} {ip}: {exc}")
+                return ""
+        return ""
+
+    def _store_ip(self, dev, ip):
+        """Write a new address into the device props (replace, never merge)."""
+        with self._props_lock:
+            new_props = dict(dev.pluginProps)
+            new_props["ip_address"] = ip
+            dev.replacePluginPropsOnServer(new_props)
+
+    def _identity_cleared(self, dev):
+        self._identity_bad.pop(dev.id, None)
+        self._identity_warned = {k for k in self._identity_warned if k[0] != dev.id}
+
+    def _identity_mismatch(self, dev, ip, found):
+        """Refuse to write anything for this device, and say so once.
+
+        One line, not one per poll: the whole point is that the device stays
+        quiet until it is found again.
+        """
+        found_mac  = normalise_mac(found)
+        stored_mac = normalise_mac(dev.pluginProps.get("mac_address", ""))
+        self._identity_bad[dev.id] = found_mac
+        key = (dev.id, ip, found_mac)
+        if key in self._identity_warned:
+            return
+        self._identity_warned.add(key)
+        log(f"[{dev.name}] wrong device at {ip} - expected MAC {stored_mac}, found "
+            f"{found_mac or '(unreadable)'}. Nothing will be recorded for this device "
+            f"until it is found again by MAC. Check whether its address has changed.",
+            level="WARNING")
+
+    def _resolve_by_mac(self, dev):
+        """Find this device again by MAC and move it if it has a new address.
+
+        Returns the address to use now, or None when the MAC is not currently
+        advertised. Confirms the MAC at the new address before rewriting the
+        props, so a stale advertisement cannot repeat the very fault this is
+        here to prevent.
+        """
+        mac = normalise_mac(dev.pluginProps.get("mac_address", ""))
+        if not mac:
+            return None
+        found = self._mdns_lookup(mac)
+        if not found:
+            return None
+        stored = dev.pluginProps.get("ip_address", "").strip()
+        if found == stored and not self._identity_bad.get(dev.id):
+            return stored
+        now = time.time()
+        if (now - self._confirm_attempt.get(dev.id, 0)) < IDENTITY_CONFIRM_THROTTLE:
+            return None
+        self._confirm_attempt[dev.id] = now
+        if normalise_mac(self._read_device_mac(found)) != mac:
+            self.logger.debug(f"[{dev.name}] {found} did not confirm MAC {mac}")
+            return None
+        if found != stored:
+            self._store_ip(dev, found)
+            log(f"[{dev.name}] found at {found} by MAC {mac} (was {stored or 'unset'}) "
+                f"- address updated")
+        self._mac_verified[dev.id] = now
+        self._identity_cleared(dev)
+        return found
+
+    def _try_relocate(self, dev):
+        """After repeated failures, see whether the device has simply moved.
+
+        Throttled hard, and deliberately silent: plugs switched off at the wall
+        are the normal state in this house, so an absent device must cost a
+        dictionary lookup and no log lines at all.
+        """
+        now = time.time()
+        if (now - self._relocate_attempt.get(dev.id, 0)) < IDENTITY_RELOCATE_THROTTLE:
+            return
+        self._relocate_attempt[dev.id] = now
+        try:
+            self._resolve_by_mac(dev)
+        except Exception as exc:
+            self.logger.debug(f"[{dev.name}] relocate: {exc}")
+
+    def _learn_mac(self, dev, ip):
+        """Record the MAC of a device that has none stored yet. Throttled."""
+        now = time.time()
+        if (now - self._mac_verified.get(dev.id, 0)) < self.mac_verify_secs:
+            return ""
+        self._mac_verified[dev.id] = now
+        mac = normalise_mac(self._read_device_mac(ip))
+        if not mac:
+            return ""
+        with self._props_lock:
+            new_props = dict(dev.pluginProps)
+            new_props["mac_address"] = mac
+            dev.replacePluginPropsOnServer(new_props)
+        log(f"[{dev.name}] MAC {mac} recorded - this device is now identified by MAC")
+        return mac
+
+    def _target_ip(self, dev):
+        """The address to poll, or None to write nothing at all this tick.
+
+        Identity is the MAC. Before any state or energy figure is written the
+        plugin checks that the box answering on that address really is this
+        device. A device with no stored MAC (older config) keeps working on its
+        stored address and learns its MAC on the next successful check.
+        """
+        ip         = dev.pluginProps.get("ip_address", "").strip()
+        stored_mac = normalise_mac(dev.pluginProps.get("mac_address", ""))
+
+        if self._identity_bad.get(dev.id):
+            return self._resolve_by_mac(dev) or None
+        if not ip:
+            # No address at all: the MAC may still find it.
+            return self._resolve_by_mac(dev) or None
+        if not stored_mac:
+            # Older config with no MAC: keep working on the stored address, and
+            # learn the MAC so the device gets the same protection from here on.
+            if self.fail_count.get(dev.id, 0) < 3:
+                self._learn_mac(dev, ip)
+            return ip
+        # An already-failing device is not worth a second timeout per tick; the
+        # poll itself will fail and _mark_online forces a re-check when it returns.
+        if self.fail_count.get(dev.id, 0) >= 3:
+            return ip
+        now = time.time()
+        if (now - self._mac_verified.get(dev.id, 0)) < self.mac_verify_secs:
+            return ip
+        found = self._read_device_mac(ip)
+        if not found:
+            return ip          # unreachable - let the normal poll fail and back off
+        if normalise_mac(found) == stored_mac:
+            self._mac_verified[dev.id] = now
+            self._identity_cleared(dev)
+            return ip
+        self._identity_mismatch(dev, ip, found)
+        return self._resolve_by_mac(dev) or None
+
     def _poll_device(self, dev):
         dispatch = {
             "shellyRelay":  self._poll_relay,
@@ -2098,10 +2585,12 @@ class Plugin(indigo.PluginBase):
         # Push-only types (shellyHT, shellySmoke, shellyFlood) are not polled
 
     def _poll_relay(self, dev):
-        ip         = dev.pluginProps.get("ip_address", "").strip()
+        ip         = self._target_ip(dev)
         has_pm     = dev.pluginProps.get("has_pm", True)
         addon_temp = dev.pluginProps.get("addon_temp", False)
         chan       = self._pref_int(dev.pluginProps, "channel_id", 0)
+        # Identity gate (v3.16.0): None means the box at that address is not
+        # this device, or the device cannot be located - write nothing.
         if not ip:
             return
         try:
@@ -2178,7 +2667,9 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"poll error: {exc}")
 
     def _poll_uni(self, dev):
-        ip = dev.pluginProps.get("ip_address", "").strip()
+        ip = self._target_ip(dev)
+        # Identity gate (v3.16.0): None means the box at that address is not
+        # this device, or the device cannot be located - write nothing.
         if not ip:
             return
         kv     = []
@@ -2224,7 +2715,9 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"Uni poll error: {exc}")
 
     def _poll_cover(self, dev):
-        ip = dev.pluginProps.get("ip_address", "").strip()
+        ip = self._target_ip(dev)
+        # Identity gate (v3.16.0): None means the box at that address is not
+        # this device, or the device cannot be located - write nothing.
         if not ip:
             return
         try:
@@ -2293,9 +2786,11 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"cover poll error: {exc}")
 
     def _poll_dimmer(self, dev):
-        ip     = dev.pluginProps.get("ip_address", "").strip()
+        ip     = self._target_ip(dev)
         has_pm = dev.pluginProps.get("has_pm", True)
         chan   = self._pref_int(dev.pluginProps, "channel_id", 0)
+        # Identity gate (v3.16.0): None means the box at that address is not
+        # this device, or the device cannot be located - write nothing.
         if not ip:
             return
         try:
@@ -2333,7 +2828,9 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"dimmer poll error: {exc}")
 
     def _poll_i4(self, dev):
-        ip = dev.pluginProps.get("ip_address", "").strip()
+        ip = self._target_ip(dev)
+        # Identity gate (v3.16.0): None means the box at that address is not
+        # this device, or the device cannot be located - write nothing.
         if not ip:
             return
         kv     = []
@@ -2377,9 +2874,11 @@ class Plugin(indigo.PluginBase):
           with the device's channel id, where `total_act_energy` IS the field
           (the old code called EM.GetStatus, which EM1 hardware doesn't answer).
         """
-        ip        = dev.pluginProps.get("ip_address", "").strip()
+        ip        = self._target_ip(dev)
         is_3phase = dev.pluginProps.get("is_3phase", False)
         chan      = self._pref_int(dev.pluginProps, "channel_id", 0)
+        # Identity gate (v3.16.0): None means the box at that address is not
+        # this device, or the device cannot be located - write nothing.
         if not ip:
             return
         try:
@@ -2471,7 +2970,9 @@ class Plugin(indigo.PluginBase):
             self._poll_failed(dev, f"EM poll error: {exc}")
 
     def _poll_rgbw(self, dev):
-        ip = dev.pluginProps.get("ip_address", "").strip()
+        ip = self._target_ip(dev)
+        # Identity gate (v3.16.0): None means the box at that address is not
+        # this device, or the device cannot be located - write nothing.
         if not ip:
             return
         try:
@@ -2685,8 +3186,14 @@ class Plugin(indigo.PluginBase):
     # ---------------------------------------------------------------------------
 
     def _mark_online(self, dev):
+        was_failing = self.fail_count.get(dev.id, 0) > 0
         self.last_seen[dev.id]  = time.time()
         self.fail_count[dev.id] = 0          # reset consecutive failure counter
+        if was_failing:
+            # A device that has been away may have come back at a different
+            # address, or another device may now hold its old one. Check identity
+            # on the next tick rather than waiting out the full verify interval.
+            self._mac_verified.pop(dev.id, None)
         # A successful poll proves the device is reachable, so allow the webhook
         # health check to attempt repair afresh next cycle (clears any back-off).
         self.webhook_repair_fails.pop(dev.id, None)
@@ -2865,6 +3372,9 @@ class Plugin(indigo.PluginBase):
         self.last_polled[dev.id] = time.time()
         if count >= 3:
             self._mark_offline(dev, reason)
+            # v3.16.0: it may simply have moved. Quiet and heavily throttled —
+            # a plug switched off at the wall must not cost anything.
+            self._try_relocate(dev)
 
     def _mark_offline(self, dev, reason=""):
         if dev.states.get("deviceOnline", True):
@@ -2909,6 +3419,24 @@ class Plugin(indigo.PluginBase):
         except Exception as exc:
             log(f"Could not load energy data: {exc} - starting fresh", level="WARNING")
             self.energy_data = {}
+
+    def _prune_energy_data(self):
+        """Drop energy baselines belonging to devices that no longer exist.
+
+        The file was never pruned, so it carried a baseline and 30 days of
+        history for every device ever deleted — 24 orphans out of 44 entries by
+        July 2026. Runs once at startup, after Indigo has loaded the devices.
+        """
+        live = {str(dev.id) for dev in indigo.devices.iter("self")}
+        with self._energy_lock:
+            orphans = [k for k in self.energy_data
+                       if k != "__meta__" and k not in live]
+            for key in orphans:
+                self.energy_data.pop(key, None)
+        if orphans:
+            self._save_energy_data()
+            log(f"Energy history: removed {len(orphans)} entries for deleted devices")
+        return orphans
 
     def _save_energy_data(self):
         try:
@@ -3205,10 +3733,10 @@ class Plugin(indigo.PluginBase):
         return ips
 
     def _existing_device_macs(self):
-        """Return {MAC_UPPER: dev} for all plugin devices that have mac_address stored."""
+        """Return {MAC: dev} for all plugin devices that have mac_address stored."""
         result = {}
         for dev in indigo.devices.iter("self"):
-            mac = dev.pluginProps.get("mac_address", "").strip().upper()
+            mac = normalise_mac(dev.pluginProps.get("mac_address", ""))
             if mac:
                 result[mac] = dev
         return result
@@ -3408,17 +3936,23 @@ class Plugin(indigo.PluginBase):
                                    and d.pluginProps.get("ip_address", "").strip() == ip),
                                   None)
                     if ip_dev is not None and mac_upper:
-                        stored = ip_dev.pluginProps.get("mac_address", "").strip().upper()
+                        stored = normalise_mac(ip_dev.pluginProps.get("mac_address", ""))
                         if stored and stored != mac_upper:
-                            log(f"[Discovery] {ip_dev.name:<30} {ip:<18} -- LIVE MAC "
-                                f"{mac_upper} differs from stored {stored} (hardware "
-                                f"replaced?) — updating the record's MAC",
-                                level="WARNING")
-                        if stored != mac_upper:
+                            # v3.16.0: do NOT adopt the live MAC here. Identity is
+                            # the MAC, so a different MAC at this address means the
+                            # record is pointed at the wrong box — rewriting its
+                            # identity would make the mistake permanent. Say so and
+                            # leave it; the poll gate refuses to write meanwhile.
+                            log(f"[Discovery] {ip_dev.name:<30} {ip:<18} -- {mac_upper} "
+                                f"answers here, but this device is {stored}. Its stored "
+                                f"address is wrong (or the hardware was replaced). No "
+                                f"data is being recorded for it. Correct the address, or "
+                                f"clear its MAC in the device dialog if the unit really "
+                                f"was swapped.", level="WARNING")
+                        elif not stored:
                             new_props = dict(ip_dev.pluginProps)
                             new_props["mac_address"] = mac_upper
                             ip_dev.replacePluginPropsOnServer(new_props)
-                            existing_macs.pop(stored, None)
                             existing_macs[mac_upper] = ip_dev
                     log(
                         f"[Discovery] {ip:<18} gen={gen}  {label:<22} -- already configured"
@@ -3544,6 +4078,8 @@ class Plugin(indigo.PluginBase):
             ("Indigo Server IP:",  self.server_ip or "(not configured)"),
             ("Discovery Subnets:", self.subnets_raw or "(not configured)"),
             ("Devices:",           f"{len(devs)} ({online} online)"),
+            ("mDNS Browser:",      ("running" if self._zc else "not running")
+                                   + f" ({len(self._mdns_map)} Shellys seen)"),
             ("Auth Enabled:",      "Yes" if self.shelly_user else "No"),
             ("Firmware Notify:",   "Yes" if self.firmware_notify else "No"),
             ("Timestamps in Log:", "ON" if self.timestamp_enabled else "OFF"),
