@@ -5,7 +5,13 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Fable 5
 # Date:        17-07-2026
-# Version:     3.15
+# Version:     3.15.1
+#
+# v3.15.1 (21-07-2026): LOG-LEVEL FIX. indigo.server.log(level=...) wants a Python
+# logging INT — a STRING is silently ignored and the line logs as plain Info.
+# The log() helper passed its level name straight through, so every WARNING and
+# ERROR raised through it had been appearing as an ordinary Info line. Added
+# _lvl() to map the name to a real level. Estate-wide sweep (38 files).
 #
 # v3.15 (17-07-2026) — Fable 5 deep-review improvements batch.
 #   * NEW "Test Shelly Connection" menu item (estate convention): full banner
@@ -314,8 +320,29 @@ except ImportError:
     _SECRETS_SHELLY_SUBNETS = ""
 
 
+_LOG_LEVELS = {
+    "DEBUG":   logging.DEBUG,
+    "INFO":    logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR":   logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
+
+def _lvl(level):
+    """Map a level NAME to a Python logging int.
+
+    indigo.server.log(level=...) wants an int. A STRING is silently ignored
+    and the line logs as plain Info, which hid every WARNING and ERROR raised
+    through log() until this was corrected (21-07-2026).
+    """
+    if isinstance(level, int):
+        return level
+    return _LOG_LEVELS.get(str(level).upper(), logging.INFO)
+
+
 def log(message, level="INFO"):
-    indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {message}", level=level)
+    indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {message}", level=_lvl(level))
 
 
 PLUGIN_ID    = "com.clives.indigoplugin.shellydirect"
