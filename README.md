@@ -228,7 +228,7 @@ Any extra field a Shelly returns that the plugin does not have a dedicated state
 
 ## Credentials — `IndigoSecrets.py`
 
-This plugin (along with all CliveS Indigo plugins) can read sensitive values from a shared master credentials file at:
+This plugin, like every CliveS Indigo plugin, can read sensitive values from one shared master file:
 
 `/Library/Application Support/Perceptive Automation/IndigoSecrets.py`
 
@@ -237,7 +237,7 @@ This plugin (along with all CliveS Indigo plugins) can read sensitive values fro
 | `IndigoSecrets.py` | Working file the plugin reads at runtime. Keep a backup in a password manager. | YES | **NO** — listed in `.gitignore` |
 | `IndigoSecrets_example.py` | Template only — empty placeholders. Shipped in the plugin bundle. | NO | YES |
 
-If you do not have `IndigoSecrets.py`, copy `IndigoSecrets_example.py` from the plugin bundle to `/Library/Application Support/Perceptive Automation/` and rename it to `IndigoSecrets.py`, then fill in your values. Or skip `IndigoSecrets.py` entirely and enter everything via the plugin's Configure dialog — `IndigoSecrets.py` wins over the dialog when both are set. If a required value is set in neither source, the plugin logs an ERROR telling you which key to add or which field to fill in.
+If you don't have `IndigoSecrets.py`, copy `IndigoSecrets_example.py` out of the plugin bundle into `/Library/Application Support/Perceptive Automation/`, rename it to `IndigoSecrets.py`, and fill in your values. Or skip the file altogether and type everything into the plugin's Configure dialog — where both are set, `IndigoSecrets.py` wins. If neither source supplies a value the plugin needs, it logs an ERROR naming the key to add or the field to fill in.
 
 **Keys read by ShellyDirect**:
 
@@ -254,13 +254,13 @@ All four are read from `IndigoSecrets.py` first, then from the plugin config as 
 
 ## Logging
 
-Every log line is prefixed with a millisecond timestamp `[HH:MM:SS.mmm]` so events can be correlated tightly with other CliveS plugins (Device Activity Monitor uses the same convention).
+Every log line carries a millisecond timestamp `[HH:MM:SS.mmm]`, so you can line events up precisely against the other CliveS plugins — Device Activity Monitor uses the same format.
 
-To turn the prefix off (or back on) at any time:
+To turn the prefix off, or back on, at any time:
 
 **Plugins → Shelly Direct → Toggle Timestamps in Log (on/off)**
 
-The setting is stored in `pluginPrefs` (`timestampEnabled`) and persists across restarts. It defaults to ON.
+The plugin stores the setting in `pluginPrefs` (`timestampEnabled`) and it survives a restart. It defaults to ON.
 
 ---
 
