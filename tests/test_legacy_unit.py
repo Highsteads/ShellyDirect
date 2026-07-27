@@ -508,11 +508,32 @@ class TestCalcEnergyPhantomZero(unittest.TestCase):
         self.assertAlmostEqual(today, 0.5)               # +500 Wh -> 0.5 kWh
 
     def test_genuine_meter_reset_rebaselines(self):
+        # v3.16.2: a low reading is now HELD for confirmation before it is
+        # believed, because a REPORTED `aenergy.total: 0` is indistinguishable
+        # from a real reset on a single sample and used to zero the baseline —
+        # publishing the whole lifetime total as "today" on the next poll. A
+        # genuine reset persists, so it still re-baselines; it just takes the
+        # second consecutive low reading.
         s = self._stub()
         _module.Plugin._calc_energy(s, 1, 5000.0)
-        today, _month = _module.Plugin._calc_energy(s, 1, 10.0)   # power-cycled
+        _module.Plugin._calc_energy(s, 1, 10.0)                   # power-cycled — strike one
+        self.assertEqual(s.energy_data["1"]["day_baseline_wh"], 5000.0,
+                         "a single low reading must be held, not believed")
+        today, _month = _module.Plugin._calc_energy(s, 1, 12.0)   # strike two — believed
         self.assertEqual(today, 0.0)
-        self.assertEqual(s.energy_data["1"]["day_baseline_wh"], 10.0)
+        self.assertEqual(s.energy_data["1"]["day_baseline_wh"], 12.0)
+
+    def test_reported_zero_does_not_zero_the_baseline(self):
+        # The gap the v3.6 guard left open: it only filtered an ABSENT field.
+        # A device REPORTING 0 handed a real 0.0 straight to _calc_energy.
+        s = self._stub()
+        _module.Plugin._calc_energy(s, 1, 100_000.0)
+        _module.Plugin._calc_energy(s, 1, 120_000.0)
+        today, _ = _module.Plugin._calc_energy(s, 1, 0.0)          # the glitch
+        self.assertEqual(s.energy_data["1"]["day_baseline_wh"], 100_000.0)
+        self.assertAlmostEqual(today, 20.0)                        # last known-good preserved
+        today_after, _ = _module.Plugin._calc_energy(s, 1, 3_446_590.0)
+        self.assertLess(today_after, 5000.0, "lifetime total leaked into today")
 
     def test_phantom_zero_is_filtered_before_calc(self):
         # The v3.6 fix: a poll missing the cumulative field yields None from

@@ -141,8 +141,14 @@ def _energy_self(data):
 def test_missed_midnight_rolls_over_in_place(plugin_mod):
     """Device offline at midnight: the first poll of the new day must bank the
     stale day as a history row and re-baseline — not keep accumulating."""
-    from datetime import date
-    data = {"55": {"day_baseline_wh": 1000.0, "day_date": "2020-01-01",
+    from datetime import date, timedelta
+    # YESTERDAY, not an arbitrary far-past date: the scenario this test describes
+    # is a device offline across ONE midnight. v3.16.2 stopped banking a history
+    # row when the baseline is more than STALE_BANK_MAX_DAYS old, because a device
+    # offline for months was writing months of accumulation as a single day — see
+    # test_months_stale_baseline_is_not_banked below.
+    yesterday = str(date.today() - timedelta(days=1))
+    data = {"55": {"day_baseline_wh": 1000.0, "day_date": yesterday,
                    "month_baseline_wh": 500.0, "month_date": "2020-01",
                    "history": []}}
     receiver = _energy_self(data)
@@ -152,10 +158,25 @@ def test_missed_midnight_rolls_over_in_place(plugin_mod):
     assert entry["day_baseline_wh"] == 3500.0
     assert today_kwh == 0.0, "new day starts from the fresh baseline"
     # the stale period banked against its recorded date
-    assert entry["history"] == [{"date": "2020-01-01", "kwh": 2.5}]
+    assert entry["history"] == [{"date": yesterday, "kwh": 2.5}]
     # month also rolled over (2020-01 != this month)
     assert entry["month_baseline_wh"] == 3500.0
     assert month_kwh == 0.0
+
+
+def test_months_stale_baseline_is_not_banked(plugin_mod):
+    """v3.16.2: a device offline for months must re-baseline WITHOUT writing
+    months of accumulation as a single day's history row."""
+    from datetime import date, timedelta
+    long_ago = str(date.today() - timedelta(days=84))
+    data = {"56": {"day_baseline_wh": 1000.0, "day_date": long_ago,
+                   "month_baseline_wh": 1000.0, "month_date": long_ago[:7],
+                   "history": []}}
+    receiver = _energy_self(data)
+    plugin_mod.Plugin._calc_energy(receiver, 56, 400_000.0)
+    entry = data["56"]
+    assert entry["history"] == [], "must not bank an implausible one-day row"
+    assert entry["day_baseline_wh"] == 400_000.0, "must still re-baseline"
 
 
 def test_same_day_accumulation_unchanged(plugin_mod):
@@ -172,14 +193,20 @@ def test_same_day_accumulation_unchanged(plugin_mod):
 
 def test_counter_reset_still_rebaselines(plugin_mod):
     """A device reboot that resets the meter below the baseline must
-    re-baseline (pre-existing rule, must survive the rollover change)."""
+    re-baseline (pre-existing rule, must survive the rollover change).
+
+    v3.16.2: it now takes TWO consecutive low readings. A single low sample is
+    indistinguishable from a device reporting a phantom `aenergy.total: 0`, which
+    used to zero the baseline and publish the lifetime total as today's usage."""
     from datetime import date
     today = str(date.today())
     data = {"55": {"day_baseline_wh": 5000.0, "day_date": today,
                    "month_baseline_wh": 5000.0, "month_date": today[:7]}}
     receiver = _energy_self(data)
-    today_kwh, _ = plugin_mod.Plugin._calc_energy(receiver, 55, 100.0)
-    assert data["55"]["day_baseline_wh"] == 100.0
+    plugin_mod.Plugin._calc_energy(receiver, 55, 100.0)          # strike one — held
+    assert data["55"]["day_baseline_wh"] == 5000.0
+    today_kwh, _ = plugin_mod.Plugin._calc_energy(receiver, 55, 105.0)   # strike two
+    assert data["55"]["day_baseline_wh"] == 105.0
     assert today_kwh == 0.0
 
 

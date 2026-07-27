@@ -3,9 +3,26 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 4.8
-# Date:        21-07-2026
-# Version:     3.16.1
+# Author:      CliveS & Claude Opus 5
+# Date:        27-07-2026
+# Version:     3.16.2
+#
+# v3.16.2 (27-07-2026): PHANTOM LIFETIME-TOTAL ENERGY FIX — a SECOND, still-open
+# route to the same failure v3.16.0 addressed. That release fixed the IP-collision
+# cause of the 20-07-2026 "Used 3446.59 kWh (~£911.97)" near-miss (two Indigo
+# records polling one plug). This closes an independent path to an identical
+# symptom that survived it.
+# * _calc_energy treated ANY reading below the running baseline as a counter
+#   reset and re-baselined immediately. _get_total_wh only returns None for an
+#   ABSENT field, so a device REPORTING `aenergy.total: 0` handed a real 0.0
+#   straight through — the baseline went to zero and the next poll published the
+#   whole LIFETIME total as today's usage. Now a low reading is held PENDING and
+#   only committed if a second consecutive reading is also low: a genuine reset
+#   persists, a glitch does not. While pending, the last known-good pair is
+#   returned rather than a fabricated 0.
+# * The in-place day rollover no longer banks a history row when the baseline is
+#   more than STALE_BANK_MAX_DAYS old — a device offline for weeks was banking
+#   months of accumulation as a single day.
 #
 # v3.16.1 (21-07-2026): shared plugin_utils.py refreshed to v1.3 — the
 # estate-wide propagation of the four Appliance Monitor deep-review fixes.
@@ -388,6 +405,20 @@ def _lvl(level):
     return _LOG_LEVELS.get(str(level).upper(), logging.INFO)
 
 
+def _days_between(from_str, to_str):
+    """Whole days between two YYYY-MM-DD strings, or None if either is unusable.
+
+    Module-level and pure on purpose: it needs no plugin state, and keeping it off
+    the class means _calc_energy can be exercised against a bare stub.
+    """
+    try:
+        d0 = date.fromisoformat(from_str)
+        d1 = date.fromisoformat(to_str)
+    except (ValueError, TypeError):
+        return None
+    return (d1 - d0).days
+
+
 def log(message, level="INFO"):
     indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {message}", level=_lvl(level))
 
@@ -396,6 +427,9 @@ PLUGIN_ID    = "com.clives.indigoplugin.shellydirect"
 WEBHOOK_PORT = 8178   # Plugin-owned HTTP listener
 VAR_FOLDER   = "ShellyDirect"
 HISTORY_DAYS = 30     # Rolling daily energy history retained per device
+STALE_BANK_MAX_DAYS = 2   # Don't bank an in-place day rollover as history if the
+                          # baseline is older than this — a device offline for weeks
+                          # would otherwise write months of kWh as one day's row.
 
 # Webhook repair backoff: after this many consecutive health-check repairs that
 # fail to "stick" (device unreachable mid-write, or a duplicate record clobbering
@@ -3467,7 +3501,56 @@ class Plugin(indigo.PluginBase):
         with self._energy_lock:
             entry = self.energy_data.get(key, {})
 
-            if "day_baseline_wh" not in entry or total_wh < entry.get("day_baseline_wh", 0):
+            # v3.16.2 — TWO-STRIKE COUNTER-RESET RULE.
+            #
+            # A reading BELOW the running baseline used to re-baseline immediately,
+            # on the assumption it could only mean the device's cumulative counter
+            # had reset. It can also mean the device reported a transient rubbish
+            # value, and a Shelly that reports `aenergy.total: 0` for one poll is
+            # the case that bit us: `_get_total_wh` only returns None for an ABSENT
+            # field, so a REPORTED 0 arrives here as a real 0.0, zeroes the
+            # baseline, and the next poll reports the whole LIFETIME total as
+            # today's usage. Live consequence (20-Jul-2026): a source Shelly held
+            # ~3446 kWh in energyKwhToday for about an hour, Appliance Monitor
+            # stored it against 9 of 15 recent cycles, and a doorReady Pushover was
+            # armed to announce "Used 3446.59 kWh (~£911.97)".
+            #
+            # A GENUINE counter reset persists; a glitch does not. So a low reading
+            # is now held as PENDING and only committed when a second consecutive
+            # reading is also low. While pending we return the last known-good
+            # figures rather than a fabricated 0, matching how the callers already
+            # preserve energy when a reading is missing entirely.
+            have_baseline = "day_baseline_wh" in entry
+            is_low        = have_baseline and total_wh < entry.get("day_baseline_wh", 0)
+            if is_low:
+                pending = entry.get("pending_reset_wh")
+                if pending is None:
+                    # First strike — suspect, not yet believed.
+                    entry["pending_reset_wh"] = total_wh
+                    self.energy_data[key] = entry
+                    log(f"[dev {dev_id}] cumulative energy went backwards "
+                        f"({total_wh:.1f} Wh < baseline {entry.get('day_baseline_wh', 0):.1f} Wh) — "
+                        f"holding for confirmation, energy preserved this poll",
+                        level="WARNING")
+                    return (entry.get("last_today_kwh", 0.0),
+                            entry.get("last_month_kwh", 0.0))
+                # Second strike — believe it and re-baseline both windows.
+                log(f"[dev {dev_id}] cumulative energy still low ({total_wh:.1f} Wh) — "
+                    f"treating as a genuine counter reset and re-baselining",
+                    level="WARNING")
+                entry.pop("pending_reset_wh", None)
+                entry["day_baseline_wh"]   = total_wh
+                entry["day_date"]          = today_str
+                entry["month_baseline_wh"] = total_wh
+                entry["month_date"]        = month_str
+                entry["last_today_kwh"]    = 0.0
+                entry["last_month_kwh"]    = 0.0
+                self.energy_data[key]      = entry
+                return 0.0, 0.0
+            # Reading is back at or above the baseline — any suspicion was a glitch.
+            entry.pop("pending_reset_wh", None)
+
+            if not have_baseline:
                 entry["day_baseline_wh"] = total_wh
                 entry["day_date"]        = today_str
             elif entry.get("day_date") != today_str:
@@ -3479,15 +3562,28 @@ class Plugin(indigo.PluginBase):
                 # row against the recorded day_date (best effort — includes any
                 # post-midnight usage up to now), then re-baseline.
                 stale_kwh = max(0.0, (total_wh - entry.get("day_baseline_wh", total_wh)) / 1000.0)
-                entry.setdefault("history", []).append({
-                    "date": entry.get("day_date", ""),
-                    "kwh":  round(stale_kwh, 4),
-                })
-                entry["history"] = entry["history"][-HISTORY_DAYS:]
+                # v3.16.2: only bank a history row if the gap is plausibly ONE day's
+                # absence. A device offline for weeks (live example: the Tumble Dryer
+                # Monitor sat on a 04-May baseline while offline) would otherwise
+                # bank months of accumulation as a single day's row — a number that
+                # then reads as a real daily total everywhere downstream. Re-baseline
+                # either way; just don't invent the history.
+                banked_days = _days_between(entry.get("day_date", ""), today_str)
+                if banked_days is not None and banked_days <= STALE_BANK_MAX_DAYS:
+                    entry.setdefault("history", []).append({
+                        "date": entry.get("day_date", ""),
+                        "kwh":  round(stale_kwh, 4),
+                    })
+                    entry["history"] = entry["history"][-HISTORY_DAYS:]
+                elif stale_kwh > 0:
+                    log(f"[dev {dev_id}] energy baseline was {banked_days} days stale "
+                        f"({entry.get('day_date','?')} -> {today_str}); "
+                        f"discarding {stale_kwh:.3f} kWh rather than banking it as one day",
+                        level="WARNING")
                 entry["day_baseline_wh"] = total_wh
                 entry["day_date"]        = today_str
 
-            if "month_baseline_wh" not in entry or total_wh < entry.get("month_baseline_wh", 0):
+            if "month_baseline_wh" not in entry:
                 entry["month_baseline_wh"] = total_wh
                 entry["month_date"]        = month_str
             elif entry.get("month_date") != month_str:
@@ -3495,9 +3591,13 @@ class Plugin(indigo.PluginBase):
                 entry["month_baseline_wh"] = total_wh
                 entry["month_date"]        = month_str
 
-            self.energy_data[key] = entry
             today_kwh = max(0.0, (total_wh - entry["day_baseline_wh"])   / 1000.0)
             month_kwh = max(0.0, (total_wh - entry["month_baseline_wh"]) / 1000.0)
+            # Remembered so a pending (unconfirmed) counter reset can return the
+            # last known-good pair instead of fabricating a 0.
+            entry["last_today_kwh"] = today_kwh
+            entry["last_month_kwh"] = month_kwh
+            self.energy_data[key]   = entry
         return today_kwh, month_kwh
 
     def _midnight_reset(self, today_str):
