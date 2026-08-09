@@ -4,8 +4,30 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 5
-# Date:        27-07-2026
-# Version:     3.16.2
+# Date:        09-08-2026
+# Version:     3.16.3
+#
+# v3.16.3 (09-08-2026): MIDNIGHT RESET NO LONGER WARNS ABOUT A DEVICE THAT IS
+# OFF BY DESIGN. _midnight_reset walked every energy device and tried to read
+# its cumulative counter, so a plug that was away raised "Midnight reset failed:
+# … timed out" every single midnight for as long as it stayed away.
+# * Two plugs here (washing machine, tumble dryer) are switched off at the wall
+#   between uses, so the pair produced two warnings a night, every night, for
+#   entirely correct behaviour. The plugin already understands this — the
+#   v3.16.0 relocation path is deliberately silent because "a plug switched off
+#   at the wall must not cost anything" — but the midnight sweep never got the
+#   same treatment.
+# * The cost is not the log noise, it is what the noise hides: the tumble dryer
+#   plug had been genuinely dead for five days and looked exactly like the two
+#   plugs that are meant to be off.
+# * A device already marked offline is now skipped before both warning branches.
+#   It has nothing to read, and _mark_offline has already reported the
+#   transition for anything that wants alerting.
+# * The guard reads deviceOnline with a default of True on purpose. An ABSENT
+#   state is unknown, not offline — treating it as offline would make a device
+#   that never reports its status quietly stop resetting its daily baseline.
+# * 4 tests in tests/test_v3163_midnight_offline.py; 2 verified failing against
+#   3.16.2, the other 2 are regression guards that must pass on both sides.
 #
 # v3.16.2 (27-07-2026): PHANTOM LIFETIME-TOTAL ENERGY FIX — a SECOND, still-open
 # route to the same failure v3.16.0 addressed. That release fixed the IP-collision
@@ -3611,6 +3633,17 @@ class Plugin(indigo.PluginBase):
                 continue
             ip = dev.pluginProps.get("ip_address", "").strip()
             if not ip:
+                continue
+            # v3.16.3: a device already known offline has nothing to read, so both
+            # warning branches below would fire every midnight for as long as it
+            # stays away. A plug switched off at the wall between uses (washing
+            # machine, tumble dryer) is off by DESIGN, and _mark_offline already
+            # reported the transition for anything that wants alerting.
+            # NB default True — an ABSENT state must not read as offline, or a
+            # device that has never reported its status silently stops resetting.
+            if not dev.states.get("deviceOnline", True):
+                self.logger.debug(
+                    f"[{dev.name}] Midnight: offline, baseline left unchanged")
                 continue
             try:
                 if dev.deviceTypeId == "shellyEM":
