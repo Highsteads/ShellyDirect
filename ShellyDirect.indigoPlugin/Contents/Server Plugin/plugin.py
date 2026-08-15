@@ -5,7 +5,17 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 5
 # Date:        09-08-2026
-# Version:     3.16.3
+# Version:     3.16.4
+#
+# v3.16.4 (15-08-2026): the midnight energy reset stopped crying wolf.
+# The washing machine and tumble dryer plugs are switched off at the wall
+# between uses — this file already said so at the top — so at midnight they are
+# USUALLY unreachable. That is the house working as intended, and there is
+# nothing to account for either: an appliance that was never on used no energy.
+# Both midnight paths logged it as a WARNING regardless, which produced an
+# identical amber line every night for at least ten nights and was then read as
+# a week of corrupted energy figures. Now INFO. A midnight failure that is NOT
+# a network error still logs as a WARNING, so a real fault keeps its colour.
 #
 # v3.16.3 (09-08-2026): MIDNIGHT RESET NO LONGER WARNS ABOUT A DEVICE THAT IS
 # OFF BY DESIGN. _midnight_reset walked every energy device and tried to read
@@ -3667,7 +3677,15 @@ class Plugin(indigo.PluginBase):
                 # Leave the baseline untouched and skip — fabricating a 0 here would
                 # append a bogus history row and zero the baseline (phantom spike).
                 if total_wh is None:
-                    log(f'[{dev.name}] Midnight: no energy reading — baseline left unchanged', level="WARNING")
+                    # INFO, not WARNING. The washing machine and tumble dryer
+                    # plugs are switched off at the wall between uses, so at
+                    # midnight they are USUALLY off — which is the house
+                    # working as intended, not a fault. There is also nothing
+                    # to account for: an appliance that was never on used no
+                    # energy. This line ran nightly for ten nights straight and
+                    # was read as a week of corrupted energy figures.
+                    log(f'[{dev.name}] Midnight: no energy reading (device off '
+                        f'or unreachable) — baseline left unchanged')
                     continue
 
                 key = str(dev.id)
@@ -3693,7 +3711,17 @@ class Plugin(indigo.PluginBase):
                         log(f'[{dev.name}] Monthly baseline reset for {month_str}')
                     self.energy_data[key] = entry
 
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout) as exc:
+                # Could not reach the plug. For an appliance monitor that is the
+                # NORMAL state — see the note above — so this is information,
+                # not a warning. Kept rather than silenced so the log still
+                # shows what happened.
+                log(f'[{dev.name}] Midnight: device not reachable '
+                    f'({type(exc).__name__}) — baseline left unchanged')
             except Exception as exc:
+                # Anything that is NOT a network failure is still a real
+                # problem and keeps its colour.
                 log(f'[{dev.name}] Midnight reset failed: {exc}', level="WARNING")
 
         self._save_energy_data()
