@@ -2,7 +2,7 @@
 
 Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo](https://www.indigodomo.com/). No cloud, no MQTT — the plugin talks to each Shelly straight over your LAN, and the Shellys push their state changes back to Indigo over a small built-in webhook listener.
 
-**Version:** 3.16.3 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 3.17.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 *Developed and tested on Indigo 2025.2 / Python 3.13. Older Indigo releases that meet the minimum API version above should also work — the API floor is what Indigo's plugin loader actually checks.*
 
