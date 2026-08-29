@@ -5,7 +5,7 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 5
 # Date:        09-08-2026
-# Version:     3.16.4
+# Version:     3.17.0
 #
 # v3.16.4 (15-08-2026): the midnight energy reset stopped crying wolf.
 # The washing machine and tumble dryer plugs are switched off at the wall
@@ -789,6 +789,7 @@ class Plugin(indigo.PluginBase):
         self.firmware_notify = prefs.get("firmware_notify_enabled", False)
 
         self.last_polled          = {}   # {dev_id: float}
+        self.last_detail          = {}   # {dev_id: float}  slow self-description sweep
         self.last_seen            = {}   # {dev_id: float}
         self.fail_count           = {}   # {dev_id: int}  consecutive poll failures
         self._webhook_repairs     = {}   # {shelly_ip: ts} stale-devId repair rate limit (v3.13)
@@ -1343,6 +1344,14 @@ class Plugin(indigo.PluginBase):
                             interval = max(interval, 300)   # offline back-off (v3.13)
                         if (now - self.last_polled.get(dev.id, 0)) >= interval:
                             self._poll_device(dev)
+
+                        # Slow self-description sweep. Skipped entirely while a
+                        # device is in offline back-off: there is no sense asking
+                        # a box that is not answering how strong its signal is.
+                        det = self._pref_int(dev.pluginProps, "detail_interval", 300)
+                        if det > 0 and self.fail_count.get(dev.id, 0) < 3 \
+                           and (now - self.last_detail.get(dev.id, 0)) >= det:
+                            self._poll_detail(dev)
                     except Exception as exc:
                         log(f'poll loop error "{getattr(dev, "name", "?")}": {exc}', level="WARNING")
               except self.StopThread:
@@ -2745,6 +2754,74 @@ class Plugin(indigo.PluginBase):
             log(f'[{dev.name}] poll error: {exc}', level="WARNING")
             self._poll_failed(dev, f"poll error: {exc}")
 
+    # Fields worth keeping out of Shelly.GetStatus. Deliberately NOT everything
+    # the box reports: ram_free, fs_free and the *_rev counters change on almost
+    # every read, so capturing them would add ~10 rows per device per sweep to
+    # the SQL Logger for numbers nobody ever looks at. What is here is what
+    # answers a question — where is this device, how well is it hearing the AP,
+    # has it rebooted, and can it reach the things it is meant to reach.
+    _DETAIL_WIFI = ("rssi", "ssid", "channel", "bssid", "sta_ip", "status")
+    _DETAIL_SYS  = ("uptime", "mac", "restart_required")
+    _DETAIL_LINK = ("cloud", "mqtt", "ws")
+
+    def _poll_detail(self, dev):
+        """The device's own view of itself — signal, association, uptime, links.
+
+        Kept apart from the fast poll on purpose. Switch.GetStatus drives
+        automation and runs every 30s; none of this moves on that timescale, so
+        a second call each tick would double the traffic for numbers nobody
+        watches second by second.
+
+        `wifi.rssi` is the point of it. UniFi can only report what the AP hears;
+        this is what the DEVICE hears, which is the half that decides whether it
+        holds a connection. The two legitimately differ — measured 29-08-2026, a
+        plug UniFi put at -31 dBm reported -16 itself. `wifi.bssid` is the other
+        prize: it names the AP the device actually associated with, so a plug
+        clinging to a distant AP is visible without asking the controller.
+
+        A failure here is deliberately silent and does NOT touch fail_count or
+        the online verdict — the fast poll owns that judgement, and a device
+        that is answering Switch.GetStatus perfectly well must never be marked
+        offline because an extra call timed out.
+        """
+        ip = self._target_ip(dev)
+        if not ip:
+            return
+        try:
+            resp = self._rget(f"http://{ip}/rpc/Shelly.GetStatus", timeout=4)
+            resp.raise_for_status()
+            data = resp.json() or {}
+        except Exception as exc:
+            self.logger.debug(f'[{dev.name}] detail sweep skipped: {exc}')
+            return
+
+        # Only the whole-device blocks. The component blocks (switch:0 and the
+        # model's own UI block) are owned by the curated poll — capturing those
+        # too would give every plug a second, differently-named copy of its own
+        # power reading, and the two would disagree between sweeps.
+        fields = {}
+        wifi = data.get("wifi") or {}
+        for k in self._DETAIL_WIFI:
+            if wifi.get(k) not in (None, ""):
+                fields[f"wifi_{k}"] = wifi[k]
+        sysblk = data.get("sys") or {}
+        for k in self._DETAIL_SYS:
+            if sysblk.get(k) is not None:
+                fields[f"sys_{k}"] = sysblk[k]
+        updates = sysblk.get("available_updates") or {}
+        fields["sys_update_available"] = bool(updates)
+        stable = (updates.get("stable") or {}).get("version")
+        if stable:
+            fields["sys_update_version"] = stable
+        for k in self._DETAIL_LINK:
+            blk = data.get(k)
+            if isinstance(blk, dict) and "connected" in blk:
+                fields[f"{k}_connected"] = bool(blk["connected"])
+
+        if fields:
+            self._capture_unhandled_fields(dev, fields)
+        self.last_detail[dev.id] = time.time()
+
     def _poll_uni(self, dev):
         ip = self._target_ip(dev)
         # Identity gate (v3.16.0): None means the box at that address is not
@@ -3964,6 +4041,7 @@ class Plugin(indigo.PluginBase):
             "ip_address":           ip,
             "has_pm":               has_pm,
             "poll_interval":        "30",
+            "detail_interval":      "300",
             "lock_off":             False,
             "channel_id":           "0",
             "addon_temp":           False,

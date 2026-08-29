@@ -79,6 +79,19 @@
 					<Option value="120">Every 2 minutes</Option>
 				</List>
 			</Field>
+			<Field id="detail_interval" type="menu" defaultValue="300">
+				<Label>Detail Sweep:</Label>
+				<List>
+					<Option value="0">Off</Option>
+					<Option value="120">Every 2 minutes</Option>
+					<Option value="300">Every 5 minutes (default)</Option>
+					<Option value="900">Every 15 minutes</Option>
+					<Option value="3600">Every hour</Option>
+				</List>
+			</Field>
+			<Field id="detail_note" type="label" fontSize="small">
+				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
+			</Field>
 			<Field id="sep8" type="separator"/>
 			<Field id="suppress_offline_alerts" type="checkbox" defaultValue="false">
 				<Label>Suppress Offline Alerts:</Label>
@@ -162,6 +175,19 @@
 					<Option value="120">Every 2 minutes</Option>
 				</List>
 			</Field>
+			<Field id="detail_interval" type="menu" defaultValue="300">
+				<Label>Detail Sweep:</Label>
+				<List>
+					<Option value="0">Off</Option>
+					<Option value="120">Every 2 minutes</Option>
+					<Option value="300">Every 5 minutes (default)</Option>
+					<Option value="900">Every 15 minutes</Option>
+					<Option value="3600">Every hour</Option>
+				</List>
+			</Field>
+			<Field id="detail_note" type="label" fontSize="small">
+				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
+			</Field>
 		</ConfigUI>
 		<States>
 			<State id="input0">
@@ -223,6 +249,19 @@
 					<Option value="30">Every 30 seconds</Option>
 					<Option value="60">Every 60 seconds</Option>
 				</List>
+			</Field>
+			<Field id="detail_interval" type="menu" defaultValue="300">
+				<Label>Detail Sweep:</Label>
+				<List>
+					<Option value="0">Off</Option>
+					<Option value="120">Every 2 minutes</Option>
+					<Option value="300">Every 5 minutes (default)</Option>
+					<Option value="900">Every 15 minutes</Option>
+					<Option value="3600">Every hour</Option>
+				</List>
+			</Field>
+			<Field id="detail_note" type="label" fontSize="small">
+				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
 			</Field>
 		</ConfigUI>
 		<States>
@@ -304,6 +343,19 @@
 					<Option value="30">Every 30 seconds (default)</Option>
 					<Option value="60">Every 60 seconds</Option>
 				</List>
+			</Field>
+			<Field id="detail_interval" type="menu" defaultValue="300">
+				<Label>Detail Sweep:</Label>
+				<List>
+					<Option value="0">Off</Option>
+					<Option value="120">Every 2 minutes</Option>
+					<Option value="300">Every 5 minutes (default)</Option>
+					<Option value="900">Every 15 minutes</Option>
+					<Option value="3600">Every hour</Option>
+				</List>
+			</Field>
+			<Field id="detail_note" type="label" fontSize="small">
+				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
 			</Field>
 		</ConfigUI>
 		<States>
@@ -396,6 +448,19 @@
 					<Option value="10">Every 10 seconds (default)</Option>
 					<Option value="30">Every 30 seconds</Option>
 				</List>
+			</Field>
+			<Field id="detail_interval" type="menu" defaultValue="300">
+				<Label>Detail Sweep:</Label>
+				<List>
+					<Option value="0">Off</Option>
+					<Option value="120">Every 2 minutes</Option>
+					<Option value="300">Every 5 minutes (default)</Option>
+					<Option value="900">Every 15 minutes</Option>
+					<Option value="3600">Every hour</Option>
+				</List>
+			</Field>
+			<Field id="detail_note" type="label" fontSize="small">
+				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
 			</Field>
 		</ConfigUI>
 		<States>
@@ -524,6 +589,19 @@
 					<Option value="30">Every 30 seconds (default)</Option>
 					<Option value="60">Every 60 seconds</Option>
 				</List>
+			</Field>
+			<Field id="detail_interval" type="menu" defaultValue="300">
+				<Label>Detail Sweep:</Label>
+				<List>
+					<Option value="0">Off</Option>
+					<Option value="120">Every 2 minutes</Option>
+					<Option value="300">Every 5 minutes (default)</Option>
+					<Option value="900">Every 15 minutes</Option>
+					<Option value="3600">Every hour</Option>
+				</List>
+			</Field>
+			<Field id="detail_note" type="label" fontSize="small">
+				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
 			</Field>
 		</ConfigUI>
 		<States>
@@ -725,6 +803,19 @@
 					<Option value="30">Every 30 seconds (default)</Option>
 					<Option value="60">Every 60 seconds</Option>
 				</List>
+			</Field>
+			<Field id="detail_interval" type="menu" defaultValue="300">
+				<Label>Detail Sweep:</Label>
+				<List>
+					<Option value="0">Off</Option>
+					<Option value="120">Every 2 minutes</Option>
+					<Option value="300">Every 5 minutes (default)</Option>
+					<Option value="900">Every 15 minutes</Option>
+					<Option value="3600">Every hour</Option>
+				</List>
+			</Field>
+			<Field id="detail_note" type="label" fontSize="small">
+				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
 			</Field>
 		</ConfigUI>
 		<States>
