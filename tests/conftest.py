@@ -54,6 +54,13 @@ _plugin = importlib.util.module_from_spec(_spec)
 sys.modules["plugin"] = _plugin
 try:
     _spec.loader.exec_module(_plugin)
+except ModuleNotFoundError:
+    # A MISSING DEPENDENCY is not "Plugin() init needs a full Indigo", which is
+    # what the blanket catch below is for. Swallowing it leaves a module object
+    # that exists but never finished executing, so every test downstream failed
+    # with "module 'plugin' has no attribute ..." — an error that says nothing
+    # about the real cause. It cost a CI run to work out. Let it speak.
+    raise
 except Exception:  # noqa: BLE001 - Plugin() init may need full Indigo; module-level defs are what we test
     pass
 
