@@ -101,6 +101,15 @@ Read from IndigoSecrets.SHELLY_USERNAME / SHELLY_PASSWORD first; these fields ar
 
 	<Field id="sep6" type="separator"/>
 
+	<Field id="logActivityToEventLog" type="checkbox" defaultValue="false">
+		<Label>Show Device Activity in the Indigo Event Log:</Label>
+	</Field>
+	<Field id="hlpLogActivity" type="label" fontSize="mini" alignWithControl="true">
+		<Label>Off by default. Routine activity - every relay and light on, off, dim and colour command, each button press or sensor report, and the daily energy baseline reset - is always written to this plugin's own log file (Indigo's Logs folder). Tick this to have it echoed into the shared Indigo Event Log as well. Warnings and errors always appear in the Event Log whatever this is set to, and so does a cover opening, closing or moving to a position.</Label>
+	</Field>
+
+	<Field id="sep7" type="separator"/>
+
 	<Field id="logLevel" type="menu" defaultValue="20">
 		<Label>Log Level:</Label>
 		<List>

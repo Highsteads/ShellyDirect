@@ -72,8 +72,15 @@ def _run_ensure(plugin_mod, hooks, wanted, live_devices):
 
     receiver = types.SimpleNamespace(
         _rget=_rget,
-        logger=types.SimpleNamespace(debug=lambda *a, **k: None),
+        logger=types.SimpleNamespace(debug=lambda *a, **k: None,
+                                     info=lambda *a, **k: None),
+        # 'Webhooks OK' is latched against this set (06-09-2026) and the routine
+        # narration goes through the shipped _log_activity, so bind both
+        # rather than stubbing them -- a stub would test the stub.
+        log_activity=False,
+        _webhook_bad=set(),
     )
+    receiver._log_activity = plugin_mod.Plugin._log_activity.__get__(receiver)
     dev = FakeDev(101, "Ch1 Relay", ip="192.168.1.50", channel="0")
     plugin_mod.Plugin._ensure_webhooks(receiver, "192.168.1.50", dev, wanted)
     return deleted, created

@@ -60,6 +60,9 @@ class _Host:
         self.energy_data   = {}
         self._energy_lock  = threading.RLock()
         self.logger        = _QuietLogger()
+        # The daily/monthly baseline lines go through _log_activity (06-09-2026).
+        self.log_activity  = False
+        self._log_activity = plugin_mod.Plugin._log_activity.__get__(self)
         self.reads         = []
         self.saved         = False
         self._midnight_reset = plugin_mod.Plugin._midnight_reset.__get__(self)

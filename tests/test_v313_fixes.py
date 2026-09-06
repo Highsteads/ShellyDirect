@@ -72,15 +72,21 @@ def _qs(d):
     return {k: [str(v)] for k, v in d.items()}
 
 
-def _apply_receiver(plugin_mod):
-    return types.SimpleNamespace(
+def _apply_receiver(plugin_mod, log_activity=False):
+    r = types.SimpleNamespace(
         last_polled={}, logger=_Logger(),
         _fire_trigger=lambda *a, **k: None,
         _mirror_states=lambda *a, **k: None,
         _qp=plugin_mod.Plugin._qp,
         _qp_int=plugin_mod.Plugin._qp_int,
         _qp_float=plugin_mod.Plugin._qp_float,
+        log_activity=log_activity,
     )
+    # Bind the SHIPPED helper, not a stub: these tests are the only thing that
+    # proves the webhook echoes land in the plugin's own log and not the
+    # shared event log.
+    r._log_activity = plugin_mod.Plugin._log_activity.__get__(r)
+    return r
 
 
 # ── _apply_webhook_event (extracted from the closure — first coverage) ────────
