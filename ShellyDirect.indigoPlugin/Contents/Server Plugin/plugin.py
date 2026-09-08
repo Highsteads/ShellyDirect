@@ -5,7 +5,7 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 5
 # Date:        09-08-2026
-# Version:     3.18.0
+# Version:     3.18.1
 #
 # v3.16.4 (15-08-2026): the midnight energy reset stopped crying wolf.
 # The washing machine and tumble dryer plugs are switched off at the wall
@@ -484,6 +484,17 @@ STALE_BANK_MAX_DAYS = 2   # Don't bank an in-place day rollover as history if th
 # the device next polls successfully (which resets the counter via _mark_online).
 MAX_WEBHOOK_REPAIR_FAILS = 3
 
+# A device that is unreachable at the MOMENT webhooks are configured is not a
+# fault — it is the ordinary race of a plug that has just appeared, or one that
+# blinks out between the health check's reachability probe and the configure
+# that follows it. _check_webhook_health already backs off exactly this way
+# before it complains that a repair has not held; this is the same rule applied
+# to the transport failure underneath, which used to shout on the very first
+# try. Below the threshold the failure is a debug line and the health check
+# simply tries again; at it, the device really has not come back and is worth
+# saying so once.
+MAX_WEBHOOK_SETUP_FAILS = 3
+
 # ---------------------------------------------------------------------------
 # Identity (v3.16.0)
 #
@@ -851,6 +862,7 @@ class Plugin(indigo.PluginBase):
         self._identity_warned  = set()# (dev_id, ip, found_mac) already logged once
         self._relocate_attempt = {}   # {dev_id: ts} throttles offline relocation
         self._webhook_bad      = set() # dev_ids whose webhook trouble was announced
+        self._webhook_setup_fails = {}  # {dev_id: consecutive transport failures configuring hooks}
         self._confirm_attempt  = {}   # {dev_id: ts} throttles confirm-at-new-address
 
         log_level = self._pref_int(prefs, "logLevel", logging.INFO)
@@ -2145,6 +2157,11 @@ class Plugin(indigo.PluginBase):
                     else:
                         self.logger.debug(f'[{dev.name}] Created {event} webhook (cid={cid})')
 
+            # We got through the RPC calls, so the transport is fine whatever
+            # the creates did. Clear the back-off or a device that recovers
+            # would carry its old failures into the next outage.
+            self._webhook_setup_fails.pop(dev.id, None)
+
             if failed:
                 self._webhook_bad.add(dev.id)
                 log(f'[{dev.name}] Webhooks partially configured — {failed} create(s) '
@@ -2156,14 +2173,44 @@ class Plugin(indigo.PluginBase):
                 self._log_activity(f'[{dev.name}] Webhooks OK')
 
         except requests.exceptions.ConnectionError:
-            self._webhook_bad.add(dev.id)
-            log(f'[{dev.name}] Webhook setup failed - no route to {ip} - poll-only', level="WARNING")
+            self._note_webhook_setup_failure(dev, f'no route to {ip}')
         except requests.exceptions.Timeout:
-            self._webhook_bad.add(dev.id)
-            log(f'[{dev.name}] Webhook setup timed out ({ip}) - poll-only', level="WARNING")
+            self._note_webhook_setup_failure(dev, f'timed out reaching {ip}')
         except Exception as exc:
+            # Anything that is NOT a transport failure is a real surprise and
+            # keeps shouting on the first occurrence.
             self._webhook_bad.add(dev.id)
             log(f'[{dev.name}] Webhook setup failed: {exc} - poll-only', level="WARNING")
+
+    def _note_webhook_setup_failure(self, dev, reason):
+        """Count a transport failure while configuring webhooks, and only
+        complain once it has genuinely persisted.
+
+        The device being unreachable right now is the common case and not a
+        fault: a plug that has just been switched on is still settling, and one
+        that is switched off most of the week (the washing machine monitor) can
+        vanish between the health check's probe and the configure that follows.
+        The health check retries on its own, so below the threshold this is a
+        debug line. At the threshold it has failed MAX_WEBHOOK_SETUP_FAILS times
+        running and is worth one WARNING; past it, it has already been said.
+        """
+        n = self._webhook_setup_fails.get(dev.id, 0) + 1
+        self._webhook_setup_fails[dev.id] = n
+        if n < MAX_WEBHOOK_SETUP_FAILS:
+            # Deliberately NOT arming _webhook_bad. That latch exists so a
+            # WARNING gets its all-clear, and an all-clear for an alarm nobody
+            # heard is just a different noise.
+            self.logger.debug(
+                f'[{dev.name}] Webhook setup failed - {reason} - poll-only '
+                f'(attempt {n}, retrying)')
+        elif n == MAX_WEBHOOK_SETUP_FAILS:
+            self._webhook_bad.add(dev.id)
+            log(f'[{dev.name}] Webhook setup failed {n} times running - {reason} '
+                f'- staying poll-only', level="WARNING")
+        else:
+            self.logger.debug(
+                f'[{dev.name}] Webhook setup still failing - {reason} - poll-only '
+                f'(attempt {n})')
 
     def _setup_sensor_webhook(self, ip, dev, url_template, event):
         """Attempt to configure a webhook on a battery sensor; log manual URL on failure.

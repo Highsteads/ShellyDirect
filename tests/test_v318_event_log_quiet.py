@@ -87,8 +87,10 @@ def _host(plugin_mod, log_activity=False, **extra):
     the stub works, which is how a routing change gets tested into thin air.
     """
     h = types.SimpleNamespace(logger=_Logger(), log_activity=log_activity,
-                              _webhook_bad=set(), **extra)
+                              _webhook_bad=set(), _webhook_setup_fails={}, **extra)
     h._log_activity = plugin_mod.Plugin._log_activity.__get__(h)
+    h._note_webhook_setup_failure = (
+        plugin_mod.Plugin._note_webhook_setup_failure.__get__(h))
     return h
 
 
@@ -279,26 +281,74 @@ def test_a_repair_that_worked_is_announced_once_and_then_falls_quiet(plugin_mod,
     assert len(event_log) == 2, event_log
 
 
-def test_an_unreachable_device_arms_the_latch(plugin_mod, monkeypatch):
-    """A device that was away must get its recovery announced when it returns,
-    so the WARNING in the event log is not left dangling with no all-clear."""
+def _unreachable(plugin_mod, h, times=1):
     import requests
-    event_log = []
-    monkeypatch.setattr(plugin_mod, "log",
-                        lambda msg, level="INFO": event_log.append((level, str(msg))))
-    h = _host(plugin_mod)
 
     def _boom(url, params=None, timeout=None):
         raise requests.exceptions.ConnectionError("no route")
 
     h._rget = _boom
     plugin_mod.indigo.devices.iter = lambda *a, **k: []
-    plugin_mod.Plugin._ensure_webhooks(h, "192.168.1.50", _Dev(), [])
+    for _ in range(times):
+        plugin_mod.Plugin._ensure_webhooks(h, "192.168.1.50", _Dev(), [])
+
+
+def test_a_single_unreachable_attempt_is_quiet(plugin_mod, monkeypatch):
+    """v3.18.1. A plug that is off most of the week — the washing machine
+    monitor — can vanish between the health check's reachability probe and the
+    configure that follows it, and that raced a WARNING into the event log on
+    the FIRST try. The health check retries by itself, so below the threshold
+    this is a debug line and nothing else."""
+    event_log = []
+    monkeypatch.setattr(plugin_mod, "log",
+                        lambda msg, level="INFO": event_log.append((level, str(msg))))
+    h = _host(plugin_mod)
+
+    _unreachable(plugin_mod, h, times=2)   # one short of the threshold
+    assert event_log == [], event_log
+    assert h._webhook_bad == set(), "the latch must not arm for a warning never issued"
+    assert len(h.logger.at("DEBUG")) == 2
+
+
+def test_a_quiet_failure_that_recovers_says_nothing_either(plugin_mod, monkeypatch):
+    """The other half: no WARNING means no 'Webhooks OK again'. An all-clear
+    for an alarm nobody heard is just a different noise."""
+    event_log = []
+    monkeypatch.setattr(plugin_mod, "log",
+                        lambda msg, level="INFO": event_log.append((level, str(msg))))
+    h = _host(plugin_mod)
+    _unreachable(plugin_mod, h, times=1)
+    _ensure(plugin_mod, h)
+    assert event_log == [], event_log
+
+
+def test_a_device_that_stays_away_arms_the_latch(plugin_mod, monkeypatch):
+    """A device that was away must get its recovery announced when it returns,
+    so the WARNING in the event log is not left dangling with no all-clear.
+    v3.18.1: it takes three consecutive failures to earn that WARNING."""
+    event_log = []
+    monkeypatch.setattr(plugin_mod, "log",
+                        lambda msg, level="INFO": event_log.append((level, str(msg))))
+    h = _host(plugin_mod)
+
+    _unreachable(plugin_mod, h, times=3)
+    assert len(event_log) == 1, event_log
     assert event_log[0][0] == "WARNING"
+    assert "3 times running" in event_log[0][1]
     assert 101 in h._webhook_bad
 
     _ensure(plugin_mod, h)
     assert event_log[1] == ("INFO", "[Kitchen Plug] Webhooks OK again")
+
+
+def test_a_recovered_device_starts_its_count_again(plugin_mod, monkeypatch):
+    """A device that comes back must not carry old failures into the next
+    outage, or the second one would warn on its first attempt."""
+    monkeypatch.setattr(plugin_mod, "log", lambda msg, level="INFO": None)
+    h = _host(plugin_mod)
+    _unreachable(plugin_mod, h, times=2)
+    _ensure(plugin_mod, h)
+    assert h._webhook_setup_fails == {}
 
 
 # ── sensor reports: the routine one is narration, the alarm is not ───────────
@@ -565,4 +615,10 @@ def test_every_fault_still_goes_through_a_route_that_reaches_the_event_log():
     # could have lost a quarter of the plugin's faults and still passed. A
     # tripwire set below the real value cannot fire; re-measure it here rather
     # than carrying a remembered number forward.
-    assert fault_sites >= 77, fault_sites
+    #
+    # 76 from v3.18.1: the ConnectionError and Timeout arms of _ensure_webhooks
+    # each carried their own first-try WARNING and now share ONE, raised by
+    # _note_webhook_setup_failure only once the failure has persisted. Two
+    # sites became one, deliberately, so the floor moves with it. Re-measured
+    # with this algorithm on 08-09-2026, not remembered.
+    assert fault_sites >= 76, fault_sites
