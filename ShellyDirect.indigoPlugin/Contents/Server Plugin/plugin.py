@@ -5,7 +5,7 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 5
 # Date:        09-08-2026
-# Version:     3.18.1
+# Version:     3.18.2
 #
 # v3.16.4 (15-08-2026): the midnight energy reset stopped crying wolf.
 # The washing machine and tumble dryer plugs are switched off at the wall
@@ -1747,6 +1747,14 @@ class Plugin(indigo.PluginBase):
         self._webhook_repairs[shelly_ip] = now
         current_dev = None
         for dev in indigo.devices.iter(PLUGIN_ID):
+            # A BLU device stores its GATEWAY's ip_address, so a gateway and the
+            # BLU devices it relays share one IP. Matching on the address alone
+            # takes whichever comes first and can reconfigure a BLU child's
+            # webhooks as though it were the gateway. The other two selections
+            # on ip_address in this file already split on BLU_TYPES; this one
+            # did not (20-09-2026).
+            if dev.deviceTypeId in BLU_TYPES:
+                continue
             if dev.pluginProps.get("ip_address", "").strip() == shelly_ip:
                 current_dev = dev
                 break
