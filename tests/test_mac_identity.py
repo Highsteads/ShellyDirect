@@ -107,10 +107,10 @@ def make_plugin(plugin_mod, macs_at=None, verify_secs=3600):
 
 def test_normalise_mac_forms_compare_equal(plugin_mod):
     n = plugin_mod.normalise_mac
-    assert n("3C8A1FECFC84") == "3C8A1FECFC84"
-    assert n("3c8a1fecfc84") == "3C8A1FECFC84"
-    assert n("3c:8a:1f:ec:fc:84") == "3C8A1FECFC84"
-    assert n("3c-8a-1f-ec-fc-84") == "3C8A1FECFC84"
+    assert n("AABBCC000011") == "AABBCC000011"
+    assert n("aabbcc000011") == "AABBCC000011"
+    assert n("aa:bb:cc:00:00:11") == "AABBCC000011"
+    assert n("aa-bb-cc-00-00-11") == "AABBCC000011"
 
 
 def test_normalise_mac_rejects_rubbish(plugin_mod):
@@ -118,7 +118,7 @@ def test_normalise_mac_rejects_rubbish(plugin_mod):
     assert n("") == ""
     assert n(None) == ""
     assert n("not a mac") == ""
-    assert n("3C8A1FECFC") == ""        # too short
+    assert n("AABBCC0000") == ""        # too short
 
 
 # ── mDNS name parsing — BOTH service types ───────────────────────────────────
@@ -126,18 +126,18 @@ def test_normalise_mac_rejects_rubbish(plugin_mod):
 def test_gen2_shelly_tcp_instance_parses(plugin_mod):
     # _shelly._tcp, lower-case MAC embedded in the instance name
     assert plugin_mod.mac_from_mdns(
-        "shellypluspluguk-3c8a1fed1000._shelly._tcp.local."
-    ) == "3C8A1FED1000"
+        "shellypluspluguk-aabbcc000013._shelly._tcp.local."
+    ) == "AABBCC000013"
 
 
 def test_gen1_http_tcp_instances_parse(plugin_mod):
     # _http._tcp, upper-case MAC — half the fleet only advertises here
     assert plugin_mod.mac_from_mdns(
-        "shelly1-8CAAB5056390._http._tcp.local."
-    ) == "8CAAB5056390"
+        "shelly1-AABBCC000014._http._tcp.local."
+    ) == "AABBCC000014"
     assert plugin_mod.mac_from_mdns(
-        "shellyuni-483FDA829C98._http._tcp.local."
-    ) == "483FDA829C98"
+        "shellyuni-AABBCC000015._http._tcp.local."
+    ) == "AABBCC000015"
 
 
 def test_non_shelly_http_advertisement_ignored(plugin_mod):
@@ -147,17 +147,17 @@ def test_non_shelly_http_advertisement_ignored(plugin_mod):
 
 def test_txt_id_wins_over_name(plugin_mod):
     # Gen1 publishes TXT id; a renamed Gen1 is still identifiable from it.
-    props = {b"id": b"shelly1-8CAAB5056390", b"app": b"switch1"}
+    props = {b"id": b"shelly1-AABBCC000014", b"app": b"switch1"}
     assert plugin_mod.mac_from_mdns("Twigs Plug._http._tcp.local.",
-                                    props) == "8CAAB5056390"
+                                    props) == "AABBCC000014"
 
 
 def test_gen2_txt_has_no_mac_so_the_name_carries_it(plugin_mod):
     # Live shape of a Gen2+ record: gen/app/ver only.
     props = {b"gen": b"2", b"app": b"PlusPlugUK", b"ver": b"1.7.5"}
     assert plugin_mod.mac_from_mdns(
-        "shellypluspluguk-3c8a1fed1000._shelly._tcp.local.", props
-    ) == "3C8A1FED1000"
+        "shellypluspluguk-aabbcc000013._shelly._tcp.local.", props
+    ) == "AABBCC000013"
 
 
 def test_renamed_gen2_record_yields_nothing_and_that_is_fine(plugin_mod):
@@ -178,30 +178,30 @@ def test_camera_txt_mac_is_not_mistaken_for_a_shelly(plugin_mod):
 
 def test_mdns_note_and_lookup(plugin_mod):
     p = make_plugin(plugin_mod)
-    p._mdns_note("3c8a1fecfc84", "192.168.1.119")
-    assert p._mdns_lookup("3C:8A:1F:EC:FC:84") == "192.168.1.119"
+    p._mdns_note("aabbcc000011", "192.168.1.119")
+    assert p._mdns_lookup("AA:BB:CC:00:00:11") == "192.168.1.119"
     assert p._mdns_lookup("A085E3BD3928") is None
 
 
 def test_mdns_note_ignores_junk(plugin_mod):
     p = make_plugin(plugin_mod)
     p._mdns_note("", "192.168.1.5")
-    p._mdns_note("3C8A1FECFC84", "")
+    p._mdns_note("AABBCC000011", "")
     assert p._mdns_map == {}
 
 
 # ── The poll gate ────────────────────────────────────────────────────────────
 
 def test_matching_mac_allows_the_poll(plugin_mod, logged):
-    p   = make_plugin(plugin_mod, macs_at={"192.168.1.118": "3C8A1FECFC84"})
-    dev = FakeDev(mac="3C8A1FECFC84", ip="192.168.1.118")
+    p   = make_plugin(plugin_mod, macs_at={"192.168.1.118": "AABBCC000011"})
+    dev = FakeDev(mac="AABBCC000011", ip="192.168.1.118")
     assert p._target_ip(dev) == "192.168.1.118"
     assert logged == []                       # a healthy device says nothing
 
 
 def test_verification_is_throttled(plugin_mod):
-    p   = make_plugin(plugin_mod, macs_at={"192.168.1.118": "3C8A1FECFC84"})
-    dev = FakeDev(mac="3C8A1FECFC84", ip="192.168.1.118")
+    p   = make_plugin(plugin_mod, macs_at={"192.168.1.118": "AABBCC000011"})
+    dev = FakeDev(mac="AABBCC000011", ip="192.168.1.118")
     for _ in range(5):
         assert p._target_ip(dev) == "192.168.1.118"
     assert len(p._reads) == 1                 # one identity check per interval
@@ -209,7 +209,7 @@ def test_verification_is_throttled(plugin_mod):
 
 def test_mismatched_mac_refuses_the_poll(plugin_mod, logged):
     # The 21-Jul incident: another plug now answers on this address.
-    p   = make_plugin(plugin_mod, macs_at={"192.168.4.118": "3C8A1FECFC84"})
+    p   = make_plugin(plugin_mod, macs_at={"192.168.4.118": "AABBCC000011"})
     dev = FakeDev(name="Washing Machine Monitor",
                   mac="A085E3BD3928", ip="192.168.4.118")
     assert p._target_ip(dev) is None          # nothing may be written
@@ -217,12 +217,12 @@ def test_mismatched_mac_refuses_the_poll(plugin_mod, logged):
     warnings = [m for lvl, m in logged if lvl == "WARNING"]
     assert len(warnings) == 1
     assert "A085E3BD3928" in warnings[0]      # both MACs named
-    assert "3C8A1FECFC84" in warnings[0]
+    assert "AABBCC000011" in warnings[0]
     assert "192.168.4.118" in warnings[0]     # and the address
 
 
 def test_mismatch_warns_once_not_every_poll(plugin_mod, logged):
-    p   = make_plugin(plugin_mod, macs_at={"192.168.4.118": "3C8A1FECFC84"},
+    p   = make_plugin(plugin_mod, macs_at={"192.168.4.118": "AABBCC000011"},
                       verify_secs=0)
     dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118")
     for _ in range(10):
@@ -231,7 +231,7 @@ def test_mismatch_warns_once_not_every_poll(plugin_mod, logged):
 
 
 def test_mismatch_then_found_elsewhere_self_heals(plugin_mod, logged):
-    p = make_plugin(plugin_mod, macs_at={"192.168.4.118": "3C8A1FECFC84",
+    p = make_plugin(plugin_mod, macs_at={"192.168.4.118": "AABBCC000011",
                                          "192.168.4.119": "A085E3BD3928"})
     dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118")
     p._mdns_note("A085E3BD3928", "192.168.4.119")
@@ -248,19 +248,19 @@ def test_relocation_confirms_before_rewriting_props(plugin_mod, logged):
     p = make_plugin(plugin_mod, macs_at={"192.168.4.120": "AAAAAAAAAAAA"})
     dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118")
     p._mdns_note("A085E3BD3928", "192.168.4.120")
-    p._identity_bad[dev.id] = "3C8A1FECFC84"
+    p._identity_bad[dev.id] = "AABBCC000011"
     assert p._target_ip(dev) is None
     assert dev.pluginProps["ip_address"] == "192.168.4.118"     # untouched
     assert dev.prop_writes == []
 
 
 def test_device_with_no_stored_mac_keeps_working_and_learns(plugin_mod, logged):
-    p   = make_plugin(plugin_mod, macs_at={"192.168.1.50": "8CAAB5056390"})
+    p   = make_plugin(plugin_mod, macs_at={"192.168.1.50": "AABBCC000014"})
     dev = FakeDev(ip="192.168.1.50")
     assert dev.pluginProps.get("mac_address") is None
     assert p._target_ip(dev) == "192.168.1.50"                  # still polled
-    assert dev.pluginProps["mac_address"] == "8CAAB5056390"     # learned
-    assert any("8CAAB5056390" in m for _lvl, m in logged)
+    assert dev.pluginProps["mac_address"] == "AABBCC000014"     # learned
+    assert any("AABBCC000014" in m for _lvl, m in logged)
 
 
 def test_unreadable_mac_does_not_block_the_poll(plugin_mod, logged):
@@ -325,7 +325,7 @@ def _patch_devices(plugin_mod, monkeypatch, devs):
 def test_address_clash_detected(plugin_mod, monkeypatch):
     p     = make_plugin(plugin_mod)
     other = FakeDev(dev_id=2, name="Garage Outside Mains Plug",
-                    mac="3C8A1FECFC84", ip="192.168.4.118")
+                    mac="AABBCC000011", ip="192.168.4.118")
     _patch_devices(plugin_mod, monkeypatch, [other])
     clash = p._address_clash("192.168.4.118",
                              {"channel_id": "0", "mac_address": "A085E3BD3928"},
@@ -335,21 +335,21 @@ def test_address_clash_detected(plugin_mod, monkeypatch):
 
 def test_same_device_different_channel_is_not_a_clash(plugin_mod, monkeypatch):
     p     = make_plugin(plugin_mod)
-    other = FakeDev(dev_id=2, name="Plus 2PM ch0", mac="3C8A1FECFC84",
+    other = FakeDev(dev_id=2, name="Plus 2PM ch0", mac="AABBCC000011",
                     ip="192.168.4.118", channel="0")
     _patch_devices(plugin_mod, monkeypatch, [other])
     assert p._address_clash("192.168.4.118",
-                            {"channel_id": "1", "mac_address": "3C8A1FECFC84"},
+                            {"channel_id": "1", "mac_address": "AABBCC000011"},
                             "shellyRelay", 3) == ""
 
 
 def test_same_mac_same_address_is_not_a_clash(plugin_mod, monkeypatch):
     p     = make_plugin(plugin_mod)
-    other = FakeDev(dev_id=2, name="Same box", mac="3C8A1FECFC84",
+    other = FakeDev(dev_id=2, name="Same box", mac="AABBCC000011",
                     ip="192.168.4.118")
     _patch_devices(plugin_mod, monkeypatch, [other])
     assert p._address_clash("192.168.4.118",
-                            {"channel_id": "0", "mac_address": "3c8a1fecfc84"},
+                            {"channel_id": "0", "mac_address": "aabbcc000011"},
                             "shellyRelay", 3) == ""
 
 

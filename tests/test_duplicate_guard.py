@@ -40,13 +40,13 @@ def _detect(plugin_mod, devices):
 
 def test_same_mac_same_channel_flags_higher_id(plugin_mod):
     """The exact bug: two records, identical MAC + channel -> one is a duplicate."""
-    keeper = FakeDev(100, "Dehumidifier Plug", mac="3C8A1FED0728", ip="192.168.4.106")
-    dupe   = FakeDev(200, "Dream Router Plug", mac="3C8A1FED0728", ip="192.168.4.106")
+    keeper = FakeDev(100, "Dehumidifier Plug", mac="AABBCC000012", ip="192.168.4.106")
+    dupe   = FakeDev(200, "Dream Router Plug", mac="AABBCC000012", ip="192.168.4.106")
     dup_ids, collisions = _detect(plugin_mod, [dupe, keeper])  # unsorted input
     assert dup_ids == {200}                       # higher id is the loser
     assert len(collisions) == 1
     ident, kept, losers = collisions[0]
-    assert ident == "3C8A1FED0728"
+    assert ident == "AABBCC000012"
     assert kept.id == 100                          # lowest id kept
     assert [d.id for d in losers] == [200]
 
@@ -88,9 +88,9 @@ def test_macless_records_collide_on_ip(plugin_mod):
 
 def test_disabled_or_unconfigured_ignored(plugin_mod):
     """Disabled / unconfigured records don't count as live duplicates."""
-    keeper = FakeDev(100, "Live",      mac="3C8A1FED0728")
-    off    = FakeDev(200, "Disabled",  mac="3C8A1FED0728", enabled=False)
-    unconf = FakeDev(300, "Unconf",    mac="3C8A1FED0728", configured=False)
+    keeper = FakeDev(100, "Live",      mac="AABBCC000012")
+    off    = FakeDev(200, "Disabled",  mac="AABBCC000012", enabled=False)
+    unconf = FakeDev(300, "Unconf",    mac="AABBCC000012", configured=False)
     dup_ids, collisions = _detect(plugin_mod, [keeper, off, unconf])
     assert dup_ids == set()
     assert collisions == []

@@ -5,7 +5,7 @@
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 5
 # Date:        09-08-2026
-# Version:     3.18.2
+# Version:     3.18.3
 #
 # v3.16.4 (15-08-2026): the midnight energy reset stopped crying wolf.
 # The washing machine and tumble dryer plugs are switched off at the wall
@@ -81,8 +81,8 @@
 #     names both MACs and the address, and the plugin goes looking for the
 #     device again. Re-checked once an hour per device (mac_verify_minutes).
 #   * mDNS resolution keyed on the MAC. BOTH service types are browsed —
-#     _shelly._tcp (Gen2+, e.g. shellypluspluguk-3c8a1fed1000) and _http._tcp
-#     (Gen1, e.g. shelly1-8CAAB5056390) — because half the fleet only advertises
+#     _shelly._tcp (Gen2+, e.g. shellypluspluguk-aabbcc000013) and _http._tcp
+#     (Gen1, e.g. shelly1-AABBCC000014) — because half the fleet only advertises
 #     on one of them. When a MAC turns up at a new address the plugin confirms
 #     it there, rewrites ip_address and logs one INFO line saying it self-healed.
 #   * Absent devices stay quiet. The washing machine and tumble dryer plugs are
@@ -504,8 +504,8 @@ MAX_WEBHOOK_SETUP_FAILS = 3
 # turn a MAC back into a current address.
 #
 # Both service types must be browsed. Gen2+ devices advertise _shelly._tcp with
-# an instance name like "shellypluspluguk-3c8a1fed1000"; Gen1 devices advertise
-# _http._tcp with names like "shelly1-8CAAB5056390" and "shellyuni-483FDA829C98".
+# an instance name like "shellypluspluguk-aabbcc000013"; Gen1 devices advertise
+# _http._tcp with names like "shelly1-AABBCC000014" and "shellyuni-AABBCC000015".
 # Browsing only one of them leaves half the fleet unfindable.
 # ---------------------------------------------------------------------------
 MDNS_SERVICE_TYPES        = ["_shelly._tcp.local.", "_http._tcp.local."]
@@ -518,8 +518,8 @@ IDENTITY_CONFIRM_THROTTLE = 60     # seconds between confirm requests at a new a
 def normalise_mac(value):
     """Reduce a MAC to bare upper-case hex, or "" if it is not one.
 
-    Shelly reports "3C8A1FECFC84" over RPC and "3c8a1fed1000" in its mDNS name,
-    and a user may have typed "3c:8a:1f:ec:fc:84" into the device dialog. All
+    Shelly reports "AABBCC000011" over RPC and "aabbcc000013" in its mDNS name,
+    and a user may have typed "aa:bb:cc:00:00:11" into the device dialog. All
     three must compare equal.
     """
     if not value:
@@ -532,7 +532,7 @@ def mac_from_instance(instance):
     """Pull the MAC out of an mDNS instance name, or "" if there isn't one.
 
     Shelly names its advertisements "<model>-<mac>", e.g.
-    "shellypluspluguk-3c8a1fed1000" or "shelly1-8CAAB5056390". Anything that is
+    "shellypluspluguk-aabbcc000013" or "shelly1-AABBCC000014". Anything that is
     not a Shelly is ignored, which matters for _http._tcp — every printer and
     web server on the LAN advertises there too.
     """
@@ -567,9 +567,9 @@ def mac_from_mdns(name, properties=None):
     """The MAC of a Shelly advertisement, or "" if it is not one.
 
     Live survey of this estate (21-07-2026) — what the records actually contain:
-      * Gen1 (_http._tcp) carries TXT id=shelly1-8CAAB5056390, matching its name.
+      * Gen1 (_http._tcp) carries TXT id=shelly1-AABBCC000014, matching its name.
       * Gen2+ (_shelly._tcp and _http._tcp) carries only gen/app/ver, so the MAC
-        comes from the default instance name shellypluspluguk-3c8a1fed1000.
+        comes from the default instance name shellypluspluguk-aabbcc000013.
       * Gen2+ ALSO advertises a second _shelly._tcp record under the user's own
         name ("Sonos Woofer Plug") with no MAC anywhere. That one yields nothing,
         which costs nothing: the same device's default-named record carries it.
