@@ -40,8 +40,8 @@ def _detect(plugin_mod, devices):
 
 def test_same_mac_same_channel_flags_higher_id(plugin_mod):
     """The exact bug: two records, identical MAC + channel -> one is a duplicate."""
-    keeper = FakeDev(100, "Dehumidifier Plug", mac="AABBCC000012", ip="192.168.4.106")
-    dupe   = FakeDev(200, "Dream Router Plug", mac="AABBCC000012", ip="192.168.4.106")
+    keeper = FakeDev(100, "Dehumidifier Plug", mac="AABBCC000012", ip="192.168.1.206")
+    dupe   = FakeDev(200, "Dream Router Plug", mac="AABBCC000012", ip="192.168.1.206")
     dup_ids, collisions = _detect(plugin_mod, [dupe, keeper])  # unsorted input
     assert dup_ids == {200}                       # higher id is the loser
     assert len(collisions) == 1

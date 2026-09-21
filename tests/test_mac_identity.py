@@ -209,48 +209,48 @@ def test_verification_is_throttled(plugin_mod):
 
 def test_mismatched_mac_refuses_the_poll(plugin_mod, logged):
     # The 21-Jul incident: another plug now answers on this address.
-    p   = make_plugin(plugin_mod, macs_at={"192.168.4.118": "AABBCC000011"})
+    p   = make_plugin(plugin_mod, macs_at={"192.168.1.218": "AABBCC000011"})
     dev = FakeDev(name="Washing Machine Monitor",
-                  mac="A085E3BD3928", ip="192.168.4.118")
+                  mac="A085E3BD3928", ip="192.168.1.218")
     assert p._target_ip(dev) is None          # nothing may be written
     assert dev.state_writes == []
     warnings = [m for lvl, m in logged if lvl == "WARNING"]
     assert len(warnings) == 1
     assert "A085E3BD3928" in warnings[0]      # both MACs named
     assert "AABBCC000011" in warnings[0]
-    assert "192.168.4.118" in warnings[0]     # and the address
+    assert "192.168.1.218" in warnings[0]     # and the address
 
 
 def test_mismatch_warns_once_not_every_poll(plugin_mod, logged):
-    p   = make_plugin(plugin_mod, macs_at={"192.168.4.118": "AABBCC000011"},
+    p   = make_plugin(plugin_mod, macs_at={"192.168.1.218": "AABBCC000011"},
                       verify_secs=0)
-    dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118")
+    dev = FakeDev(mac="A085E3BD3928", ip="192.168.1.218")
     for _ in range(10):
         assert p._target_ip(dev) is None
     assert len([m for lvl, m in logged if lvl == "WARNING"]) == 1
 
 
 def test_mismatch_then_found_elsewhere_self_heals(plugin_mod, logged):
-    p = make_plugin(plugin_mod, macs_at={"192.168.4.118": "AABBCC000011",
-                                         "192.168.4.119": "A085E3BD3928"})
-    dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118")
-    p._mdns_note("A085E3BD3928", "192.168.4.119")
-    assert p._target_ip(dev) == "192.168.4.119"
-    assert dev.pluginProps["ip_address"] == "192.168.4.119"     # stored props updated
+    p = make_plugin(plugin_mod, macs_at={"192.168.1.218": "AABBCC000011",
+                                         "192.168.1.219": "A085E3BD3928"})
+    dev = FakeDev(mac="A085E3BD3928", ip="192.168.1.218")
+    p._mdns_note("A085E3BD3928", "192.168.1.219")
+    assert p._target_ip(dev) == "192.168.1.219"
+    assert dev.pluginProps["ip_address"] == "192.168.1.219"     # stored props updated
     infos = [m for lvl, m in logged if lvl == "INFO"]
-    assert any("192.168.4.119" in m and "address updated" in m for m in infos)
+    assert any("192.168.1.219" in m and "address updated" in m for m in infos)
     # And it is trusted again straight away
     assert p._identity_bad == {}
 
 
 def test_relocation_confirms_before_rewriting_props(plugin_mod, logged):
     # mDNS says the MAC is at .120 but something else answers there — refuse.
-    p = make_plugin(plugin_mod, macs_at={"192.168.4.120": "AAAAAAAAAAAA"})
-    dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118")
-    p._mdns_note("A085E3BD3928", "192.168.4.120")
+    p = make_plugin(plugin_mod, macs_at={"192.168.1.220": "AAAAAAAAAAAA"})
+    dev = FakeDev(mac="A085E3BD3928", ip="192.168.1.218")
+    p._mdns_note("A085E3BD3928", "192.168.1.220")
     p._identity_bad[dev.id] = "AABBCC000011"
     assert p._target_ip(dev) is None
-    assert dev.pluginProps["ip_address"] == "192.168.4.118"     # untouched
+    assert dev.pluginProps["ip_address"] == "192.168.1.218"     # untouched
     assert dev.prop_writes == []
 
 
@@ -267,36 +267,36 @@ def test_unreadable_mac_does_not_block_the_poll(plugin_mod, logged):
     # Device switched off at the wall: GetDeviceInfo fails, the poll proceeds
     # and fails in the normal way, and nothing is said.
     p   = make_plugin(plugin_mod, macs_at={})
-    dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118")
-    assert p._target_ip(dev) == "192.168.4.118"
+    dev = FakeDev(mac="A085E3BD3928", ip="192.168.1.218")
+    assert p._target_ip(dev) == "192.168.1.218"
     assert logged == []
 
 
 def test_failing_device_skips_the_extra_request(plugin_mod):
-    p   = make_plugin(plugin_mod, macs_at={"192.168.4.118": "A085E3BD3928"})
-    dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118")
+    p   = make_plugin(plugin_mod, macs_at={"192.168.1.218": "A085E3BD3928"})
+    dev = FakeDev(mac="A085E3BD3928", ip="192.168.1.218")
     p.fail_count[dev.id] = 7
-    assert p._target_ip(dev) == "192.168.4.118"
+    assert p._target_ip(dev) == "192.168.1.218"
     assert p._reads == []          # no second timeout per tick for an absent plug
 
 
 def test_returning_device_is_reverified(plugin_mod):
-    p   = make_plugin(plugin_mod, macs_at={"192.168.4.118": "A085E3BD3928"})
-    dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118")
+    p   = make_plugin(plugin_mod, macs_at={"192.168.1.218": "A085E3BD3928"})
+    dev = FakeDev(mac="A085E3BD3928", ip="192.168.1.218")
     p._mac_verified[dev.id] = time.time()
     p.fail_count[dev.id]    = 4
     dev.states["deviceOnline"] = True
     p._mark_online(dev)
     assert dev.id not in p._mac_verified            # forced re-check next tick
-    assert p._target_ip(dev) == "192.168.4.118"
-    assert p._reads == ["192.168.4.118"]
+    assert p._target_ip(dev) == "192.168.1.218"
+    assert p._reads == ["192.168.1.218"]
 
 
 # ── Absent devices stay quiet ────────────────────────────────────────────────
 
 def test_relocation_is_throttled_and_silent(plugin_mod, logged):
     p   = make_plugin(plugin_mod)
-    dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118")
+    dev = FakeDev(mac="A085E3BD3928", ip="192.168.1.218")
     for _ in range(20):
         p._try_relocate(dev)
     assert p._reads == []          # MAC not advertised: a dict lookup, no network
@@ -305,7 +305,7 @@ def test_relocation_is_throttled_and_silent(plugin_mod, logged):
 
 def test_poll_failure_does_not_spam(plugin_mod, logged, monkeypatch):
     p   = make_plugin(plugin_mod)
-    dev = FakeDev(mac="A085E3BD3928", ip="192.168.4.118",
+    dev = FakeDev(mac="A085E3BD3928", ip="192.168.1.218",
                   props={"suppress_offline_alerts": True})
     dev.states["deviceOnline"] = True
     monkeypatch.setattr(plugin_mod.Plugin, "_fire_trigger",
@@ -325,9 +325,9 @@ def _patch_devices(plugin_mod, monkeypatch, devs):
 def test_address_clash_detected(plugin_mod, monkeypatch):
     p     = make_plugin(plugin_mod)
     other = FakeDev(dev_id=2, name="Garage Outside Mains Plug",
-                    mac="AABBCC000011", ip="192.168.4.118")
+                    mac="AABBCC000011", ip="192.168.1.218")
     _patch_devices(plugin_mod, monkeypatch, [other])
-    clash = p._address_clash("192.168.4.118",
+    clash = p._address_clash("192.168.1.218",
                              {"channel_id": "0", "mac_address": "A085E3BD3928"},
                              "shellyRelay", 1)
     assert clash == "Garage Outside Mains Plug"
@@ -336,9 +336,9 @@ def test_address_clash_detected(plugin_mod, monkeypatch):
 def test_same_device_different_channel_is_not_a_clash(plugin_mod, monkeypatch):
     p     = make_plugin(plugin_mod)
     other = FakeDev(dev_id=2, name="Plus 2PM ch0", mac="AABBCC000011",
-                    ip="192.168.4.118", channel="0")
+                    ip="192.168.1.218", channel="0")
     _patch_devices(plugin_mod, monkeypatch, [other])
-    assert p._address_clash("192.168.4.118",
+    assert p._address_clash("192.168.1.218",
                             {"channel_id": "1", "mac_address": "AABBCC000011"},
                             "shellyRelay", 3) == ""
 
@@ -346,9 +346,9 @@ def test_same_device_different_channel_is_not_a_clash(plugin_mod, monkeypatch):
 def test_same_mac_same_address_is_not_a_clash(plugin_mod, monkeypatch):
     p     = make_plugin(plugin_mod)
     other = FakeDev(dev_id=2, name="Same box", mac="AABBCC000011",
-                    ip="192.168.4.118")
+                    ip="192.168.1.218")
     _patch_devices(plugin_mod, monkeypatch, [other])
-    assert p._address_clash("192.168.4.118",
+    assert p._address_clash("192.168.1.218",
                             {"channel_id": "0", "mac_address": "aabbcc000011"},
                             "shellyRelay", 3) == ""
 
