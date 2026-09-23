@@ -3,9 +3,17 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5
-# Date:        09-08-2026
-# Version:     3.18.3
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4)
+# Date:        23-09-2026
+# Version:     3.18.4
+#
+# v3.18.4 (23-09-2026): KEEP THE COUNTERS OUT OF SQL LOGGER. countsOnTime ticks
+# on every poll (~100 SQL Logger rows an hour per plug), and sysUptime and wifiRssi
+# change on most polls, so ShellyDirect was the largest source of history rows
+# left in the estate (~72,000 a day). deviceStartComm now merges those three into
+# each device's `sqlLoggerIgnoreStates` shared prop -- keeping the user's own
+# entries, never narrowing "*". Power, voltage, current, energy and temperature
+# history are unchanged.
 #
 # v3.16.4 (15-08-2026): the midnight energy reset stopped crying wolf.
 # The washing machine and tumble dryer plugs are switched off at the wall
@@ -471,6 +479,27 @@ def log(message, level="INFO"):
 
 
 PLUGIN_ID    = "com.clives.indigoplugin.shellydirect"
+
+# v3.18.4: states that change on nearly every poll and carry no history worth
+# keeping. SQL Logger reads the comma-separated `sqlLoggerIgnoreStates` shared
+# prop, case-insensitively.
+SQL_LOGGER_CHURN_STATES = ("countsOnTime", "sysUptime", "wifiRssi")
+
+
+def merge_sql_logger_ignore(existing, extra=SQL_LOGGER_CHURN_STATES):
+    """Return the new sqlLoggerIgnoreStates value, or None when nothing changes.
+
+    Keeps every entry the user already listed, in their order, and appends the
+    missing churn states. "*" (ignore the whole device) is left as it is.
+    """
+    current = [t.strip() for t in str(existing or "").split(",") if t.strip()]
+    if len(current) == 1 and current[0] == "*":
+        return None
+    have = {t.lower() for t in current}
+    missing = [t for t in extra if t.lower() not in have]
+    if not missing:
+        return None
+    return ", ".join(current + missing)
 WEBHOOK_PORT = 8178   # Plugin-owned HTTP listener
 VAR_FOLDER   = "ShellyDirect"
 HISTORY_DAYS = 30     # Rolling daily energy history retained per device
@@ -915,6 +944,21 @@ class Plugin(indigo.PluginBase):
     # Device lifecycle
     # ---------------------------------------------------------------------------
 
+    def _keep_churn_out_of_sql_logger(self, dev):
+        """v3.18.4: see SQL_LOGGER_CHURN_STATES. Writes only when something is
+        missing, so a restart re-checks every device without rewriting it."""
+        try:
+            shared = dev.sharedProps
+            merged = merge_sql_logger_ignore(shared.get("sqlLoggerIgnoreStates", ""))
+            if merged is None:
+                return
+            shared["sqlLoggerIgnoreStates"] = merged
+            dev.replaceSharedPropsOnServer(shared)
+            self.logger.debug(f"[{dev.name}] SQL Logger now skips {merged}")
+        except Exception as exc:
+            self.logger.warning(f"[{dev.name}] could not set the SQL Logger ignore "
+                                f"list ({exc}); history keeps the counters")
+
     def deviceStartComm(self, dev):
         self.logger.debug(f"deviceStartComm: {dev.name} ({dev.deviceTypeId})")
         # Refresh state list so any new states added in Devices.xml are available
@@ -922,6 +966,7 @@ class Plugin(indigo.PluginBase):
         self.last_polled[dev.id] = 0
         self.last_seen[dev.id]   = time.time()
         dev.updateStateOnServer("deviceOnline", True)
+        self._keep_churn_out_of_sql_logger(dev)
         # v3.14: the initial poll + webhook configure moved OFF the lifecycle
         # thread — with several offline devices, plugin startup used to stall
         # for (devices x timeout) seconds doing serial blocking network I/O.
