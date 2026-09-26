@@ -3,9 +3,45 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4)
-# Date:        23-09-2026
-# Version:     3.18.4
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4, 3.19.0)
+# Date:        26-09-2026
+# Version:     3.19.0
+#
+# v3.19.0 (26-09-2026): FULL REVIEW — code bug-hunt, live survey of all 19
+# devices and a Shelly API currency check.
+# * WEBHOOK OWNERSHIP. A hook is removed when every URL in it is ours and no
+#   longer belongs on that Shelly: its device is gone, it points at an old
+#   server address or port, its device lives on ANOTHER Shelly, or it is an
+#   exact copy of one already kept (stale_hook_reason / classify_hooks). Live:
+#   the charger plug still held the washing machine monitor's hooks from the
+#   July address clash, and two plugs held every hook twice. The six-hourly
+#   health check judges the whole list instead of "one hook exists".
+# * SENDER CHECK. The listener refuses a webhook whose sender is not the
+#   device it names (stored address, or the address mDNS advertises for its
+#   MAC), reports it once and removes it from the sender. Pref
+#   webhook_source_check, default on, for networks with NAT.
+# * INPUT EVENT NAMES. input.single_push/double_push/long_push/on/off do not
+#   exist; the real names are input.button_push/button_doublepush/
+#   button_longpush/toggle_on/toggle_off (live: Webhook.ListAllSupported on the
+#   Mini Gen 4). Input hooks are asked for only where Shelly.GetConfig lists
+#   that input, so a refused create is a real fault again.
+# * ONE CONFIGURE AT A TIME per device (lock), always on the current props;
+#   didDeviceCommPropertyChange restarts a device only for ip_address,
+#   channel_id or bthome_id, not for a learned MAC or dynamic field;
+#   closedDeviceConfigUi's extra configure thread removed; deviceStartComm no
+#   longer forces deviceOnline True.
+# * MIDNIGHT RESET through _target_ip, ignores a reading below the baseline,
+#   skips a device already rolled over today, and saves __meta__.last_date
+#   with the baselines. _calc_energy undoes a committed reset when the counter
+#   climbs back to the old baseline the same day.
+# * Dynamic states record their type on first sight ("key:n" in
+#   seenDynamicKeys); a new key was always declared String, then retyped.
+# * HTTPS: a device that redirects HTTP to HTTPS (factory 2.0+ "enhanced
+#   security") is remembered and reached over HTTPS, certificate unchecked.
+# * APP_INFO brought up to the Gen 3/4 range; app_info_for() strips the ZB and
+#   ProAddon suffixes; the invented "PlugUK" (Plug UK Gen 4) removed.
+# * BLU: stale and old-BTHome-id hooks removed from the gateway; the stale
+#   devId repair shares the 60 s rate limit. _rgbw_component takes the lock.
 #
 # v3.18.4 (23-09-2026): KEEP THE COUNTERS OUT OF SQL LOGGER. countsOnTime ticks
 # on every poll (~100 SQL Logger rows an hour per plug), and sysUptime and wifiRssi
@@ -393,6 +429,14 @@ from datetime import datetime, date
 from requests.auth import HTTPDigestAuth
 
 import requests
+import urllib3
+
+# Shelly's "enhanced security" certificates come from Shelly's own authority,
+# which no system trust store holds, so an HTTPS call to one cannot be
+# verified. The plugin has always spoken plain HTTP to these devices on the
+# LAN; unverified HTTPS is no weaker than that, and the warning urllib3 raises
+# for every such call would otherwise fill the log.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 _sys.path.insert(0, os.getcwd())
 try:
@@ -615,15 +659,147 @@ def mac_from_mdns(name, properties=None):
 
 
 # ---------------------------------------------------------------------------
+# Webhook ownership (v3.19.0)
+#
+# Every webhook this plugin installs points at its own listener and carries the
+# Indigo device id it reports for. A hook on a Shelly is ours to remove when it
+# no longer belongs there: its device is gone, it points at an old server
+# address or port, or its device lives on a DIFFERENT Shelly. The last case was
+# live on 26-09-2026 — the charger plug still carried the washing machine
+# monitor's hooks from the July address clash, because the old rule only
+# removed a hook whose device no longer existed at all.
+# ---------------------------------------------------------------------------
+_HOOK_DEVID_RE = re.compile(r"[?&]devId=(\d+)(?:&|$)")
+
+
+def hook_dev_id(url):
+    """The Indigo device id a plugin webhook URL carries, or None."""
+    m = _HOOK_DEVID_RE.search(str(url or ""))
+    return int(m.group(1)) if m else None
+
+
+def is_plugin_hook_url(url):
+    """True for a URL this plugin installs (switch/input/cover/light or BLU)."""
+    u = str(url or "")
+    return "/shellyEvent?" in u or "/shellyBluEvent?" in u
+
+
+def _hook_host_port(url):
+    try:
+        parts = urllib.parse.urlsplit(str(url))
+        return (parts.hostname or ""), (parts.port or 80)
+    except ValueError:
+        return "", 0
+
+
+def stale_hook_reason(url, this_ip, devices_by_id, server_ip="", port=0):
+    """Why a plugin webhook URL on the Shelly at `this_ip` no longer belongs
+    there, or "" when it does (or when it is not one of ours at all).
+
+    devices_by_id maps each live device of this plugin to (type_id, ip).
+    Pure, so every rule is tested without a network.
+    """
+    if not is_plugin_hook_url(url):
+        return ""                                   # never touch a foreign hook
+    dev_id = hook_dev_id(url)
+    if dev_id is None:
+        return "carries no device id"
+    if server_ip and port:
+        host, hport = _hook_host_port(url)
+        if host and (host != server_ip or hport != int(port)):
+            return f"points at {host}:{hport}, not {server_ip}:{port}"
+    owner = devices_by_id.get(dev_id)
+    if owner is None:
+        return f"device {dev_id} no longer exists"
+    owner_type, owner_ip = owner
+    if ("/shellyBluEvent?" in str(url)) != (owner_type in BLU_TYPES):
+        return f"device {dev_id} is not that kind of device"
+    if owner_ip and this_ip and owner_ip != this_ip:
+        return f"belongs to device {dev_id}, which is at {owner_ip}"
+    return ""
+
+
+def classify_hooks(hooks, this_ip, wanted_urls, devices_by_id, server_ip="", port=0):
+    """Sort a Webhook.List into what to delete and which wanted URLs exist.
+
+    Returns (delete, have_urls): delete is [(hook_id, reason)], have_urls the
+    wanted URLs already present. A hook carrying a wanted URL is kept, unless
+    it is an exact copy (same event, component and URLs) of one already kept.
+    A hook is removed as stale only when EVERY URL in it is a plugin URL that
+    no longer belongs on this Shelly. Pure, so it is tested without a network.
+    """
+    delete, have_urls, seen = [], set(), set()
+    for hook in hooks or []:
+        urls = list(hook.get("urls", []) or [])
+        key  = (hook.get("event"), hook.get("cid"), tuple(urls))
+        ours = bool(urls) and all(is_plugin_hook_url(u) for u in urls)
+        wanted_here = [u for u in urls if u in wanted_urls]
+        if not wanted_here and ours:
+            reasons = [stale_hook_reason(u, this_ip, devices_by_id, server_ip, port)
+                       for u in urls]
+            if all(reasons):
+                delete.append((hook.get("id"), reasons[0]))
+                continue
+        if ours and key in seen:
+            delete.append((hook.get("id"), "duplicate of another webhook"))
+            continue
+        seen.add(key)
+        have_urls.update(wanted_here)
+    return delete, have_urls
+
+
+def state_type_code(value):
+    """One-letter type for a dynamic state: b(ool), n(umber) or s(tring)."""
+    if isinstance(value, bool):
+        return "b"
+    if isinstance(value, (int, float)):
+        return "n"
+    return "s"
+
+
+def parse_seen_keys(csv_text, is_valid=None):
+    """{key: type code or None} from the seenDynamicKeys prop.
+
+    Entries are "key:t" from v3.19.0 and a bare "key" before it.
+    """
+    out = {}
+    for item in str(csv_text or "").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        key, _sep, code = item.partition(":")
+        key = key.strip()
+        if not key or (is_valid and not is_valid(key)):
+            continue
+        out[key] = code if code in ("b", "n", "s") else None
+    return out
+
+
+def format_seen_keys(seen):
+    """The seenDynamicKeys prop text for {key: type code or None}."""
+    return ",".join(k if not seen[k] else f"{k}:{seen[k]}" for k in sorted(seen))
+
+
+# ---------------------------------------------------------------------------
 # APP_INFO  {app_field: (display_label, has_pm, device_type_id, num_channels)}
 # device_type_id matches Devices.xml <Device id="...">
 # num_channels > 1 triggers multi-device creation in discovery
+#
+# v3.19.0: app strings checked against aioshelly const.py and usnasoft/
+# shellyscanner (both updated Sep-2026). An app that is not listed still works:
+# discovery classifies it from its live components (detect_shelly_devices).
+# Only apps whose type AND channel count follow from the app name are listed —
+# the Pro Dimmer reports one app ("ProDimmerx") for both its 1- and 2-channel
+# models, so it is left to the component count. "PlugUK" ("Plug UK Gen 4") was
+# removed: no such product exists; the Plus Plug UK is still the UK plug.
+# Zigbee/Matter firmware builds append "ZB", and Pro devices with the add-on
+# append "ProAddon" — app_info_for() strips both.
 # ---------------------------------------------------------------------------
 APP_INFO = {
     # Single relay ---------------------------------------------------------
     "PlusPlugUK":    ("Plus Plug UK",          True,  "shellyRelay",  1),
-    "PlugUK":        ("Plug UK Gen 4",         True,  "shellyRelay",  1),
     "PlugSG3":       ("Plug S Gen 3",          True,  "shellyRelay",  1),
+    "OutdoorPlugSG3": ("Outdoor Plug S Gen 3", True,  "shellyRelay",  1),
     "PlusPlugS":     ("Plus Plug S",           True,  "shellyRelay",  1),
     "PlusPlugIT":    ("Plus Plug IT",          True,  "shellyRelay",  1),
     "PlusPlugUS":    ("Plus Plug US",          True,  "shellyRelay",  1),
@@ -639,34 +815,66 @@ APP_INFO = {
     "Mini1PMG3DC":   ("1PM Mini Gen 3 DC",     True,  "shellyRelay",  1),
     "S1G4":          ("Shelly 1 Gen 4",       False,  "shellyRelay",  1),
     "S1PMG4":        ("1PM Gen 4",             True,  "shellyRelay",  1),
+    "Mini1G4":       ("1 Mini Gen 4",         False,  "shellyRelay",  1),
+    "Mini1PMG4":     ("1PM Mini Gen 4",        True,  "shellyRelay",  1),
+    "S1LG4":         ("1L Gen 4",             False,  "shellyRelay",  1),
+    "S1G3":          ("1 Gen 3",              False,  "shellyRelay",  1),
+    "S1PMG3":        ("1PM Gen 3",             True,  "shellyRelay",  1),
+    "S1LG3":         ("1L Gen 3",             False,  "shellyRelay",  1),
+    "Plus1Mini":     ("Plus 1 Mini",          False,  "shellyRelay",  1),
+    "Plus1PMMini":   ("Plus 1PM Mini",         True,  "shellyRelay",  1),
     # Multi-channel relay (discovery creates N devices, probes cover mode)
     "Plus2PM":       ("Plus 2PM",              True,  "shellyRelay",  2),
     "Pro2":          ("Pro 2",                False,  "shellyRelay",  2),
     "Pro2PM":        ("Pro 2PM",               True,  "shellyRelay",  2),
+    "Pro3":          ("Pro 3",                False,  "shellyRelay",  3),
     "Pro4PM":        ("Pro 4PM",               True,  "shellyRelay",  4),
+    "S2PMG3":        ("2PM Gen 3",             True,  "shellyRelay",  2),
+    "S2LG3":         ("2L Gen 3",             False,  "shellyRelay",  2),
+    "S2PMG4":        ("2PM Gen 4",             True,  "shellyRelay",  2),
+    "S2LG4":         ("2L Gen 4",             False,  "shellyRelay",  2),
+    "PowerStrip":    ("Power Strip Gen 4",     True,  "shellyRelay",  4),
     # Universal ------------------------------------------------------------
     "PlusUni":       ("Plus Uni",             False,  "shellyUni",    1),
     # Dimmer ---------------------------------------------------------------
-    "PlusDimmerUL":  ("Plus Dimmer 0/1-10V",   True,  "shellyDimmer", 1),
-    "WallDimmer":    ("Wall Dimmer",           False,  "shellyDimmer", 1),
-    "ProDimmer1PM":  ("Pro Dimmer 1PM",        True,  "shellyDimmer", 1),
-    "ProDimmer2PM":  ("Pro Dimmer 2PM",        True,  "shellyDimmer", 2),
+    "Plus10V":       ("Plus 0-10V Dimmer",    False,  "shellyDimmer", 1),
+    "PlusWallDimmer": ("Plus Wall Dimmer",    False,  "shellyDimmer", 1),
+    "DimmerG3":      ("Dimmer Gen 3",          True,  "shellyDimmer", 1),
+    "Dimmer0110VPMG3": ("Dimmer 0/1-10V PM Gen 3", True, "shellyDimmer", 1),
+    "DimmerG4":      ("Dimmer Gen 4",          True,  "shellyDimmer", 1),
+    "Dimmer0110VPMG4": ("Dimmer 0/1-10V PM Gen 4", True, "shellyDimmer", 1),
     # Sensors (battery / push model) --------------------------------------
     "PlusHT":        ("Plus H&T",             False,  "shellyHT",     1),
-    "HTNG":          ("Plus H&T Gen 3",       False,  "shellyHT",     1),
+    "HTG3":          ("H&T Gen 3",            False,  "shellyHT",     1),
     "PlusSmoke":     ("Plus Smoke",           False,  "shellySmoke",  1),
-    "PlusFlood":     ("Plus Flood",           False,  "shellyFlood",  1),
+    "FloodSensorG4": ("Flood Gen 4",          False,  "shellyFlood",  1),
     # Input ----------------------------------------------------------------
     "PlusI4":        ("Plus i4",              False,  "shellyI4",     1),
     "PlusI4DC":      ("Plus i4 DC",           False,  "shellyI4",     1),
+    "I4G3":          ("i4 Gen 3",             False,  "shellyI4",     1),
     # Energy meter ---------------------------------------------------------
     "ProEM":         ("Pro EM",               False,  "shellyEM",     2),   # 2x EM1 clamps (v3.12)
+    "EMG3":          ("EM Gen 3",             False,  "shellyEM",     2),   # 2x EM1 clamps
     "Pro3EM":        ("Pro 3EM",              False,  "shellyEM",     3),
     "Pro3EM400":     ("Pro 3EM-400",          False,  "shellyEM",     3),
-    "3EMG3":         ("3EM Gen 3",            False,  "shellyEM",     3),
+    "S3EMG3":        ("3EM Gen 3",            False,  "shellyEM",     3),
     # RGBW -----------------------------------------------------------------
     "PlusRGBWPM":    ("Plus RGBW PM",          True,  "shellyRGBW",   1),
 }
+
+# Suffixes a firmware build or an add-on appends to the base app name.
+_APP_SUFFIXES = ("ProAddon", "ZB")
+
+
+def app_info_for(app):
+    """APP_INFO entry for an app string, allowing for the build suffixes."""
+    app = str(app or "")
+    if app in APP_INFO:
+        return APP_INFO[app]
+    for suffix in _APP_SUFFIXES:
+        if app.endswith(suffix) and app[:-len(suffix)] in APP_INFO:
+            return APP_INFO[app[:-len(suffix)]]
+    return None
 
 # Device types that run on battery and cannot be polled on demand
 PUSH_ONLY_TYPES = {"shellyHT", "shellySmoke", "shellyFlood"}
@@ -683,8 +891,8 @@ INPUT_TYPES     = {"shellyRelay", "shellyUni", "shellyI4"}
 
 def detect_shelly_devices(device_info, config_keys):
     """Classify a Shelly Gen2+ device into the Indigo device(s) it maps to —
-    one per channel. Pure function: the testable core a future "Discover &
-    Create Shelly Devices" menu will call after probing each responder.
+    one per channel. Pure function: the testable core Discover Shelly Devices
+    calls for any app not in APP_INFO.
 
     Inputs:
       device_info  — dict from Shelly.GetDeviceInfo (we use ``app``; ``gen``,
@@ -700,8 +908,8 @@ def detect_shelly_devices(device_info, config_keys):
 
     Primary path is APP_INFO[app] — authoritative, and carries num_channels +
     has_pm. The component fallback means a brand-new Shelly model still maps
-    sensibly instead of failing (e.g. the Gen-4 'Mini1G4', not yet in the
-    table, classifies as a single relay from its 'switch:0').
+    sensibly instead of failing (a model missing from the table classifies
+    from its components, e.g. a single relay from its 'switch:0').
 
     NB: this is IP/RPC discovery, so it never yields a BLU (Bluetooth) device —
     those have no IP of their own and are reached via a gateway, so they stay
@@ -713,8 +921,9 @@ def detect_shelly_devices(device_info, config_keys):
     keys = list(config_keys or [])
 
     # Primary: the curated app -> (label, has_pm, type, channels) table.
-    if app in APP_INFO:
-        _label, has_pm, type_id, n = APP_INFO[app]
+    entry = app_info_for(app)
+    if entry:
+        _label, has_pm, type_id, n = entry
         n = max(1, int(n))
         return [{"device_type_id": type_id, "channel": i, "has_pm": bool(has_pm),
                  "app": app, "source": "app"} for i in range(n)]
@@ -894,6 +1103,24 @@ class Plugin(indigo.PluginBase):
         self._webhook_setup_fails = {}  # {dev_id: consecutive transport failures configuring hooks}
         self._confirm_attempt  = {}   # {dev_id: ts} throttles confirm-at-new-address
 
+        # ── Webhook ownership (v3.19.0) ──────────────────────────────────────
+        # One configure at a time per device. A props save restarts the device
+        # and a caller could start a second configure at the same moment; both
+        # listed, both found nothing, both created, and two plugs here ended up
+        # with every hook registered twice.
+        self._configure_locks  = {}   # {dev_id: Lock}
+        self._configure_guard  = threading.Lock()
+        self._components       = {}   # {ip: (ts, set of component keys)}
+        self._foreign_warned   = set()# (dev_id, source ip) already reported once
+        # Refuse a webhook whose sender is not the device it names. Off only for
+        # a network where a router rewrites the sender's address (NAT).
+        self.webhook_source_check = as_bool(prefs.get("webhook_source_check"), True)
+        # ── HTTPS (v3.19.0) ──────────────────────────────────────────────────
+        # Shellys that leave the factory on 2.0.0+ firmware run "enhanced
+        # security": plain HTTP is redirected to HTTPS with a certificate from
+        # Shelly's own authority. Hosts that redirected once are remembered.
+        self._https_hosts      = set()
+
         log_level = self._pref_int(prefs, "logLevel", logging.INFO)
         self.indigo_log_handler.setLevel(log_level)
         self._load_energy_data()
@@ -965,7 +1192,10 @@ class Plugin(indigo.PluginBase):
         dev.stateListOrDisplayStateIdChanged()
         self.last_polled[dev.id] = 0
         self.last_seen[dev.id]   = time.time()
-        dev.updateStateOnServer("deviceOnline", True)
+        # v3.19.0: no longer forces deviceOnline True. A start happens on every
+        # props save as well as at launch, and announcing a plug that is off at
+        # the wall as online, only for the next poll to take it back, told
+        # anything reading the state something false. The first poll decides.
         self._keep_churn_out_of_sql_logger(dev)
         # v3.14: the initial poll + webhook configure moved OFF the lifecycle
         # thread — with several offline devices, plugin startup used to stall
@@ -991,6 +1221,18 @@ class Plugin(indigo.PluginBase):
         self.logger.debug(f"deviceStopComm: {dev.name}")
         self.last_polled.pop(dev.id, None)
         self.last_seen.pop(dev.id, None)
+
+    # Props whose change means the device must be restarted (re-polled at the
+    # new address, webhooks re-pointed). Everything else the plugin writes into
+    # the props itself -- a learned MAC, newly seen dynamic fields, the RGBW
+    # profile -- used to restart the device too, because Indigo's default says
+    # "restart on ANY change". Each restart re-ran the webhook configure, and
+    # two of them overlapping is what doubled the hooks on two plugs.
+    RESTART_PROPS = ("ip_address", "channel_id", "bthome_id")
+
+    def didDeviceCommPropertyChange(self, orig_dev, new_dev):
+        old, new = orig_dev.pluginProps, new_dev.pluginProps
+        return any(str(old.get(k, "")) != str(new.get(k, "")) for k in self.RESTART_PROPS)
 
     # ---------------------------------------------------------------------------
     # Trigger lifecycle
@@ -1044,6 +1286,7 @@ class Plugin(indigo.PluginBase):
                                     or values_dict.get("shelly_password", "")).strip()
             self.firmware_notify = values_dict.get("firmware_notify_enabled", False)
             self.log_activity    = as_bool(values_dict.get("logActivityToEventLog"), False)
+            self.webhook_source_check = as_bool(values_dict.get("webhook_source_check"), True)
             self.mac_verify_secs = max(60, self._pref_int(values_dict, "mac_verify_minutes",
                                                           MAC_VERIFY_MINUTES) * 60)
             self.indigo_log_handler.setLevel(self._pref_int(values_dict, "logLevel", logging.INFO))
@@ -1107,21 +1350,6 @@ class Plugin(indigo.PluginBase):
             except (ValueError, TypeError):
                 errors["power_alert_watts"] = "Enter a valid wattage threshold (e.g. 2000)"
         return (len(errors) == 0), values_dict, errors
-
-    def closedDeviceConfigUi(self, values_dict, user_cancelled, type_id, dev_id):
-        if user_cancelled:
-            return
-        try:
-            dev = indigo.devices[dev_id]
-        except KeyError:
-            return
-        new_ip = values_dict.get("ip_address", "").strip()
-        old_ip = dev.pluginProps.get("ip_address", "").strip()
-        if new_ip and new_ip != old_ip:
-            log(f"[{dev.name}] IP changed {old_ip} -> {new_ip}; reconfiguring webhooks")
-            threading.Thread(
-                target=self._configure_webhooks, args=(dev,), daemon=True
-            ).start()
 
     # ---------------------------------------------------------------------------
     # Standard device actions  (relay, uni, cover on/off, dimmer on/off)
@@ -1417,9 +1645,7 @@ class Plugin(indigo.PluginBase):
 
                 now = time.time()
 
-                # Webhook health check every 6 hours (v3.14: the pre-loop tick
-                # body is guarded further below via the per-device try; the
-                # scheduling block itself is simple arithmetic)
+                # Webhook health check every 6 hours
                 if (now - self.last_webhook_check) >= 21600:
                     self.last_webhook_check = now
                     threading.Thread(
@@ -1781,10 +2007,17 @@ class Plugin(indigo.PluginBase):
             else:
                 self._log_activity(line)
 
-    def _repair_stale_webhook(self, shelly_ip, stale_dev_id):
+    def _repair_stale_webhook(self, shelly_ip, stale_dev_id, blu=False):
         """Rate-limited auto-repair for a webhook carrying a stale devId
         (v3.13): a chatty device used to spawn one repair THREAD PER REQUEST.
-        One repair per source IP per 60s; repairs run in a worker thread."""
+        One repair per source IP per 60s; repairs run in a worker thread.
+
+        v3.19.0: the BLU listener shares this path (its own copy had no rate
+        limit, and its repair only ever created hooks, so the stale one kept
+        firing and every press logged another "auto-reconfiguring"). The
+        configure it starts now REMOVES hooks that no longer belong, so the
+        repair actually repairs.
+        """
         now = time.time()
         last = self._webhook_repairs.get(shelly_ip, 0)
         if (now - last) < 60:
@@ -1797,8 +2030,8 @@ class Plugin(indigo.PluginBase):
             # takes whichever comes first and can reconfigure a BLU child's
             # webhooks as though it were the gateway. The other two selections
             # on ip_address in this file already split on BLU_TYPES; this one
-            # did not (20-09-2026).
-            if dev.deviceTypeId in BLU_TYPES:
+            # did not (20-09-2026). v3.19.0: a BLU repair wants a BLU child.
+            if (dev.deviceTypeId in BLU_TYPES) != blu:
                 continue
             if dev.pluginProps.get("ip_address", "").strip() == shelly_ip:
                 current_dev = dev
@@ -1810,8 +2043,73 @@ class Plugin(indigo.PluginBase):
             threading.Thread(target=self._configure_webhooks,
                              args=(current_dev,), daemon=True).start()
         else:
+            # No device of ours lives there any more, so nothing would ever
+            # reconfigure it. Remove the dead hooks directly.
             self.logger.warning(
-                f"[webhook] Device {stale_dev_id} not found (source IP: {shelly_ip})")
+                f"[webhook] Device {stale_dev_id} not found (source IP: "
+                f"{shelly_ip}) - removing its webhooks from that Shelly")
+            threading.Thread(target=self._remove_hooks_for, daemon=True,
+                             args=(shelly_ip, stale_dev_id)).start()
+
+    def _webhook_source_ok(self, target, src_ip):
+        """True when a webhook naming `target` really came from its Shelly.
+
+        The sender must be the device's stored address -- or, while the
+        stored address has not caught up with a DHCP move yet, the address
+        mDNS currently advertises for the device's MAC.
+        """
+        if not getattr(self, "webhook_source_check", True):
+            return True
+        stored = target.pluginProps.get("ip_address", "").strip()
+        if not stored or stored == src_ip:
+            return True
+        mac = normalise_mac(target.pluginProps.get("mac_address", ""))
+        if mac:
+            with self._mdns_lock:
+                entry = self._mdns_map.get(mac)
+            if entry and entry[0] == src_ip:
+                return True
+        return False
+
+    def _refuse_foreign_webhook(self, target, src_ip):
+        """A Shelly sent a webhook for a device that lives on another Shelly.
+
+        Nothing is written. The stray hook is removed from the sender, and the
+        refusal is reported once per device and sender.
+        """
+        key = (target.id, src_ip)
+        if key not in self._foreign_warned:
+            self._foreign_warned.add(key)
+            stored = target.pluginProps.get("ip_address", "").strip() or "no address"
+            log(f'[webhook] Ignored an event from {src_ip} for "{target.name}", which '
+                f'is at {stored}. That Shelly is carrying a webhook left over from an '
+                f'earlier address; removing it.', level="WARNING")
+        now = time.time()
+        rkey = f"foreign:{src_ip}:{target.id}"
+        if (now - self._webhook_repairs.get(rkey, 0)) < 60:
+            return
+        self._webhook_repairs[rkey] = now
+        threading.Thread(target=self._remove_hooks_for, daemon=True,
+                         args=(src_ip, target.id)).start()
+
+    def _remove_hooks_for(self, ip, dev_id):
+        """Delete every plugin webhook on the Shelly at `ip` that names dev_id."""
+        try:
+            resp = self._rget(f"http://{ip}/rpc/Webhook.List")
+            resp.raise_for_status()
+            removed = 0
+            for hook in (resp.json() or {}).get("hooks", []):
+                urls = hook.get("urls", [])
+                if urls and all(is_plugin_hook_url(u) and hook_dev_id(u) == dev_id
+                                for u in urls):
+                    self._rget(f"http://{ip}/rpc/Webhook.Delete",
+                               params={"id": hook.get("id")})
+                    removed += 1
+            if removed:
+                log(f"[webhook] Removed {removed} stray webhook(s) for device "
+                    f"{dev_id} from the Shelly at {ip}")
+        except Exception as exc:
+            self.logger.debug(f"[webhook] could not clean {ip} of device {dev_id}: {exc}")
 
     def _start_webhook_server(self):
         plugin = self
@@ -1826,13 +2124,25 @@ class Plugin(indigo.PluginBase):
                     if not dev_id:
                         self.send_response(400); self.end_headers(); return
 
+                    src = self.client_address[0]
                     try:
                         target = indigo.devices[dev_id]
                     except KeyError:
+                        target = None
+                    if (target is None or target.pluginId != PLUGIN_ID
+                            or target.deviceTypeId in BLU_TYPES):
                         # Stale webhook — old devId from before devices were
                         # deleted/recreated. Rate-limited auto-repair (v3.13).
-                        plugin._repair_stale_webhook(self.client_address[0], dev_id)
+                        plugin._repair_stale_webhook(src, dev_id)
                         self.send_response(404); self.end_headers(); return
+
+                    # v3.19.0: the sender must be the device it names. Until
+                    # now anything that reached the listener was believed, so a
+                    # plug carrying another device's old hook wrote its own
+                    # on/off, and "online", into that device.
+                    if not plugin._webhook_source_ok(target, src):
+                        plugin._refuse_foreign_webhook(target, src)
+                        self.send_response(409); self.end_headers(); return
 
                     plugin.last_seen[dev_id] = time.time()
                     if not target.states.get("deviceOnline", True):
@@ -1884,32 +2194,20 @@ class Plugin(indigo.PluginBase):
                     except (json.JSONDecodeError, ValueError):
                         payload = {}
 
+                    gw_ip = self.client_address[0]
                     try:
                         target = indigo.devices[dev_id]
                     except KeyError:
-                        # Stale devId — try to find device by gateway IP and auto-repair
-                        gw_ip = self.client_address[0]
-                        current_dev = None
-                        for dev in indigo.devices.iter(PLUGIN_ID):
-                            if (dev.deviceTypeId in BLU_TYPES and
-                                    dev.pluginProps.get("ip_address", "").strip() == gw_ip):
-                                current_dev = dev
-                                break
-                        if current_dev:
-                            plugin.logger.info(
-                                f"[blu webhook] Stale devId {dev_id} from gateway {gw_ip} — "
-                                f"auto-reconfiguring for \"{current_dev.name}\""
-                            )
-                            threading.Thread(
-                                target=plugin._configure_webhooks,
-                                args=(current_dev,),
-                                daemon=True,
-                            ).start()
-                        else:
-                            plugin.logger.warning(
-                                f"[blu webhook] Device {dev_id} not found (gateway IP: {gw_ip})"
-                            )
+                        target = None
+                    if (target is None or target.pluginId != PLUGIN_ID
+                            or target.deviceTypeId not in BLU_TYPES):
+                        # Stale devId — reconfigure a BLU device on that
+                        # gateway, which now also removes the dead hook.
+                        plugin._repair_stale_webhook(gw_ip, dev_id, blu=True)
                         self.send_response(404); self.end_headers(); return
+                    if not plugin._webhook_source_ok(target, gw_ip):
+                        plugin._refuse_foreign_webhook(target, gw_ip)
+                        self.send_response(409); self.end_headers(); return
 
                     plugin._process_blu_event(target, payload)
                     self.send_response(200)
@@ -1959,7 +2257,113 @@ class Plugin(indigo.PluginBase):
         self._dup_cache = (now, dup_ids)
         return dup_ids
 
+    def _configure_lock(self, dev_id):
+        with self._configure_guard:
+            return self._configure_locks.setdefault(dev_id, threading.Lock())
+
+    def _device_components(self, ip, max_age=21600):
+        """Component keys the Shelly at `ip` reports (Shelly.GetConfig), cached
+        for six hours. None when the device could not be asked."""
+        now = time.time()
+        hit = self._components.get(ip)
+        if hit and (now - hit[0]) < max_age:
+            return hit[1]
+        try:
+            resp = self._rget(f"http://{ip}/rpc/Shelly.GetConfig")
+            resp.raise_for_status()
+            keys = set((resp.json() or {}).keys())
+        except Exception as exc:
+            self.logger.debug(f"components of {ip}: {exc}")
+            return None
+        self._components[ip] = (now, keys)
+        return keys
+
+    def _hook_base(self, dev):
+        return f"http://{self.server_ip}:{self.webhook_port}/shellyEvent?devId={dev.id}"
+
+    def _wanted_webhooks(self, dev, ip):
+        """(wanted, inputs_verified) for the mains types, or (None, False) for
+        the types configured another way (battery sensors, BLU).
+
+        v3.19.0: the input events carry their REAL names. The plugin asked for
+        input.single_push / double_push / long_push / on / off, which do not
+        exist, so the device refused every one and the refusal was logged as
+        "no input component on this hardware". No i4, Uni or Plus 1 input ever
+        pushed an event. Confirmed on a Mini Gen 4 with Webhook.ListAllSupported.
+        Input hooks are now only asked for where the device HAS that input, so
+        a refusal of one is a real fault again.
+        """
+        base    = self._hook_base(dev)
+        chan    = self._pref_int(dev.pluginProps, "channel_id", 0)
+        type_id = dev.deviceTypeId
+
+        def buttons(i):
+            return [
+                ("input.button_push",       f"{base}&type=button&event=single&input_id={i}", i),
+                ("input.button_doublepush", f"{base}&type=button&event=double&input_id={i}", i),
+                ("input.button_longpush",   f"{base}&type=button&event=long&input_id={i}",   i),
+            ]
+
+        def toggles(i):
+            return [
+                ("input.toggle_on",  f"{base}&type=input&input={i}&state=on",  i),
+                ("input.toggle_off", f"{base}&type=input&input={i}&state=off", i),
+            ]
+
+        if type_id == "shellyRelay":
+            wanted = [
+                ("switch.on",  f"{base}&type=switch&state=on",  chan),
+                ("switch.off", f"{base}&type=switch&state=off", chan),
+            ]
+            # Button webhooks on the channel 0 device only (the input is shared)
+            if chan == 0:
+                wanted += buttons(0)
+        elif type_id == "shellyUni":
+            wanted = [
+                ("switch.on",  f"{base}&type=switch&state=on",  0),
+                ("switch.off", f"{base}&type=switch&state=off", 0),
+            ]
+            for i in (0, 1):
+                wanted += toggles(i) + buttons(i)
+        elif type_id == "shellyCover":
+            wanted = [
+                ("cover.open",    f"{base}&type=cover_change", 0),
+                ("cover.close",   f"{base}&type=cover_change", 0),
+                ("cover.stopped", f"{base}&type=cover_change", 0),
+            ]
+        elif type_id in LIGHT_TYPES:
+            wanted = [
+                ("light.on",  f"{base}&type=light&state=on",  chan),
+                ("light.off", f"{base}&type=light&state=off", chan),
+            ]
+        elif type_id == "shellyI4":
+            # 4 inputs x 5 events = 20, exactly the device's webhook limit, so
+            # the triple press is deliberately not asked for.
+            wanted = []
+            for i in range(4):
+                wanted += toggles(i) + buttons(i)
+        else:
+            return None, False
+
+        comps = self._device_components(ip)
+        if comps is None:
+            return wanted, False
+        wanted = [w for w in wanted
+                  if not w[0].startswith("input.") or f"input:{w[2]}" in comps]
+        return wanted, True
+
     def _configure_webhooks(self, dev):
+        """Serialised per device (v3.19.0), and always on the device's CURRENT
+        props: a caller's copy can predate a props save, which used to point
+        this device's hooks at whatever plug now sat at its old address."""
+        with self._configure_lock(dev.id):
+            try:
+                dev = indigo.devices[dev.id]
+            except KeyError:
+                return False
+            return self._configure_webhooks_locked(dev)
+
+    def _configure_webhooks_locked(self, dev):
         ip      = dev.pluginProps.get("ip_address", "").strip()
         type_id = dev.deviceTypeId
         if not ip:
@@ -1977,66 +2381,11 @@ class Plugin(indigo.PluginBase):
                               f'duplicate record (see health-check warning)')
             return False
 
-        base = f"http://{self.server_ip}:{self.webhook_port}/shellyEvent?devId={dev.id}"
-        chan = self._pref_int(dev.pluginProps, "channel_id", 0)
+        base = self._hook_base(dev)
 
-        if type_id == "shellyRelay":
-            wanted = [
-                ("switch.on",  f"{base}&type=switch&state=on",  chan),
-                ("switch.off", f"{base}&type=switch&state=off", chan),
-            ]
-            # Register button webhooks on channel 0 device only (input is shared)
-            if chan == 0:
-                wanted += [
-                    ("input.single_push", f"{base}&type=button&event=single&input_id=0", 0),
-                    ("input.double_push", f"{base}&type=button&event=double&input_id=0", 0),
-                    ("input.long_push",   f"{base}&type=button&event=long&input_id=0",   0),
-                ]
-            self._ensure_webhooks(ip, dev, wanted)
-
-        elif type_id == "shellyUni":
-            wanted = [
-                ("switch.on",         f"{base}&type=switch&state=on",           0),
-                ("switch.off",        f"{base}&type=switch&state=off",          0),
-                ("input.on",          f"{base}&type=input&input=0&state=on",    0),
-                ("input.off",         f"{base}&type=input&input=0&state=off",   0),
-                ("input.on",          f"{base}&type=input&input=1&state=on",    1),
-                ("input.off",         f"{base}&type=input&input=1&state=off",   1),
-                ("input.single_push", f"{base}&type=button&event=single&input_id=0", 0),
-                ("input.double_push", f"{base}&type=button&event=double&input_id=0", 0),
-                ("input.long_push",   f"{base}&type=button&event=long&input_id=0",   0),
-                ("input.single_push", f"{base}&type=button&event=single&input_id=1", 1),
-                ("input.double_push", f"{base}&type=button&event=double&input_id=1", 1),
-                ("input.long_push",   f"{base}&type=button&event=long&input_id=1",   1),
-            ]
-            self._ensure_webhooks(ip, dev, wanted)
-
-        elif type_id == "shellyCover":
-            wanted = [
-                ("cover.open",    f"{base}&type=cover_change", 0),
-                ("cover.close",   f"{base}&type=cover_change", 0),
-                ("cover.stopped", f"{base}&type=cover_change", 0),
-            ]
-            self._ensure_webhooks(ip, dev, wanted)
-
-        elif type_id in LIGHT_TYPES:
-            wanted = [
-                ("light.on",  f"{base}&type=light&state=on",  chan),
-                ("light.off", f"{base}&type=light&state=off", chan),
-            ]
-            self._ensure_webhooks(ip, dev, wanted)
-
-        elif type_id == "shellyI4":
-            wanted = []
-            for i in range(4):
-                wanted += [
-                    ("input.on",          f"{base}&type=input&input={i}&state=on",    i),
-                    ("input.off",         f"{base}&type=input&input={i}&state=off",   i),
-                    ("input.single_push", f"{base}&type=button&event=single&input_id={i}", i),
-                    ("input.double_push", f"{base}&type=button&event=double&input_id={i}", i),
-                    ("input.long_push",   f"{base}&type=button&event=long&input_id={i}",   i),
-                ]
-            self._ensure_webhooks(ip, dev, wanted)
+        wanted, inputs_verified = self._wanted_webhooks(dev, ip)
+        if wanted is not None:
+            self._ensure_webhooks(ip, dev, wanted, inputs_verified=inputs_verified)
 
         elif type_id == "shellyHT":
             # v3.13: real Gen2+ webhook macros are ${ev.*} — the old
@@ -2071,12 +2420,21 @@ class Plugin(indigo.PluginBase):
 
         return True   # configuration dispatched (v3.14 — the menu counts on this)
 
+    def _live_devices_by_id(self):
+        return {d.id: (d.deviceTypeId, d.pluginProps.get("ip_address", "").strip())
+                for d in indigo.devices.iter("self")}
+
     def _configure_blu_webhooks(self, ip, dev):
         """Register bthomedevice press-event webhooks on the BLE gateway for this BLU device.
 
         The gateway fires POST requests to /shellyBluEvent?devId=<id> for each press.
         We never delete the gateway's own relay webhooks — only manage BLU URLs that
         contain our own devId marker.
+
+        v3.19.0: also REMOVES BLU hooks that no longer belong here (a deleted
+        device, an old server address, a device on another gateway) and this
+        device's own hooks left on an old BTHome id or registered twice. It
+        used to only ever create, so a stale hook fired for ever.
         """
         if not self.server_ip:
             log(f'[{dev.name}] BLU webhooks skipped - no Indigo server IP '
@@ -2096,12 +2454,39 @@ class Plugin(indigo.PluginBase):
             resp.raise_for_status()
             hooks = resp.json().get("hooks", [])
 
-            # Collect event names already registered for this specific BLU device URL
-            have_events = set()
+            devices_by_id = self._live_devices_by_id()
+            have_events   = set()
+            delete        = []
             for hook in hooks:
-                for u in hook.get("urls", []):
-                    if f"shellyBluEvent?devId={dev.id}" in u:
-                        have_events.add(hook.get("event", ""))
+                urls = hook.get("urls", []) or []
+                if not urls or not all("/shellyBluEvent?" in u for u in urls):
+                    continue            # the gateway's own hooks: never ours to touch
+                reasons = [stale_hook_reason(u, ip, devices_by_id,
+                                             self.server_ip, self.webhook_port)
+                           for u in urls]
+                if all(reasons):
+                    delete.append((hook.get("id"), reasons[0]))
+                    continue
+                if not all(hook_dev_id(u) == dev.id for u in urls):
+                    continue            # a sibling BLU device's live hook
+                try:
+                    cid = int(hook.get("cid", bthome_id))
+                except (TypeError, ValueError):
+                    cid = bthome_id
+                if cid != bthome_id:
+                    delete.append((hook.get("id"), f"old BTHome id {cid}"))
+                elif hook.get("event", "") in have_events:
+                    delete.append((hook.get("id"), "duplicate"))
+                else:
+                    have_events.add(hook.get("event", ""))
+
+            for hook_id, why in delete:
+                try:
+                    self._rget(f"http://{ip}/rpc/Webhook.Delete", params={"id": hook_id})
+                    log(f'[{dev.name}] Removed BLU webhook id={hook_id} from gateway {ip} ({why})')
+                except Exception as exc:
+                    log(f'[{dev.name}] Could not remove BLU webhook {hook_id}: {exc}',
+                        level="WARNING")
 
             # Create any missing press-event webhooks
             created = 0
@@ -2138,20 +2523,16 @@ class Plugin(indigo.PluginBase):
         except Exception as exc:
             log(f'[{dev.name}] BLU webhook setup failed: {exc}', level="WARNING")
 
-    def _ensure_webhooks(self, ip, dev, wanted):
-        """Create missing webhooks and delete stale ones for this device.
+    def _ensure_webhooks(self, ip, dev, wanted, inputs_verified=False):
+        """Create missing webhooks and delete ones that no longer belong.
 
-        v3.12: the stale test is devId-AWARE. The old rule ("any shellyEvent
-        URL not in this device's wanted set is stale") deleted SIBLING
-        CHANNELS' hooks on multi-channel devices (Plus 2PM / Pro 4PM / 2-ch
-        dimmers) — each channel's Indigo record carries its own devId in its
-        URLs, so channel 0's repair wiped channel 1's hooks and vice versa,
-        forever (the v3.11 back-off never engaged because each repair's own
-        recheck passed). A shellyEvent URL is now stale only when its parsed
-        devId belongs to NO live self-owned device — which still cleans up ids
-        left behind by deleted/recreated devices. Deletion is per-HOOK and only
-        when the hook carries no wanted URL, so a (hand-edited) multi-URL hook
-        that still serves this device is never silently lost.
+        v3.12: the stale test is devId-AWARE, so sibling channels' hooks on a
+        multi-channel device survive each other's repairs. v3.19.0 widens what
+        counts as stale (see stale_hook_reason / classify_hooks): a hook for a
+        device that lives on ANOTHER Shelly, one pointing at an old server
+        address or port, and an exact duplicate of a hook already present.
+        Deletion is per-HOOK and only when every URL in it is a stale plugin
+        URL, so a hand-edited hook that also carries something else survives.
         """
         try:
             resp = self._rget(f"http://{ip}/rpc/Webhook.List")
@@ -2159,29 +2540,16 @@ class Plugin(indigo.PluginBase):
             hooks = resp.json().get("hooks", [])
 
             wanted_urls = {url for _, url, _ in wanted}
-            live_ids    = {d.id for d in indigo.devices.iter("self")}
-            have_urls   = set()
-            stale_ids   = []
+            devices_by_id = {d.id: (d.deviceTypeId, d.pluginProps.get("ip_address", "").strip())
+                             for d in indigo.devices.iter("self")}
+            delete, have_urls = classify_hooks(
+                hooks, ip, wanted_urls, devices_by_id,
+                getattr(self, "server_ip", ""), getattr(self, "webhook_port", 0))
 
-            for hook in hooks:
-                hook_wanted = False
-                hook_stale  = False
-                for u in hook.get("urls", []):
-                    if u in wanted_urls:
-                        have_urls.add(u)
-                        hook_wanted = True
-                    elif "shellyEvent" in u:
-                        m = re.search(r"[?&]devId=(\d+)(?:&|$)", u)
-                        if m is None or int(m.group(1)) not in live_ids:
-                            hook_stale = True   # orphaned devId — safe to delete
-                        # else: a LIVE sibling device's hook — leave it alone
-                if hook_stale and not hook_wanted:
-                    stale_ids.append(hook.get("id"))
-
-            for hook_id in stale_ids:
+            for hook_id, why in delete:
                 try:
                     self._rget(f"http://{ip}/rpc/Webhook.Delete", params={"id": hook_id})
-                    log(f'[{dev.name}] Deleted stale webhook id={hook_id}')
+                    log(f'[{dev.name}] Removed webhook id={hook_id} ({why})')
                 except Exception as exc:
                     log(f'[{dev.name}] Could not delete stale hook {hook_id}: {exc}', level="WARNING")
 
@@ -2193,15 +2561,15 @@ class Plugin(indigo.PluginBase):
                         params={"cid": cid, "enable": "true",
                                 "event": event, "urls": json.dumps([url])}
                     )
-                    # v3.14: a failed create used to be invisible — 'Webhooks
-                    # OK' was logged anyway. input.* rejections are EXPECTED on
-                    # hardware without an input component (plugs) — those log
-                    # at debug; failures on the device's primary events WARN.
+                    # v3.14: a failed create used to be invisible. v3.19.0: an
+                    # input hook is only asked for where the device reported
+                    # that input, so its refusal is a real fault — the debug
+                    # excuse only stands when the components could not be read.
                     if cresp.status_code != 200 or "code" in (cresp.json() or {}):
-                        if event.startswith("input."):
+                        if event.startswith("input.") and not inputs_verified:
                             self.logger.debug(
-                                f'[{dev.name}] {event} webhook not supported '
-                                f'(no input component on this hardware)')
+                                f'[{dev.name}] {event} webhook refused (the '
+                                f'device did not say which inputs it has)')
                         else:
                             failed += 1
                             self.logger.warning(
@@ -2277,7 +2645,7 @@ class Plugin(indigo.PluginBase):
                 if lresp.status_code == 200:
                     for hook in (lresp.json() or {}).get("hooks", []):
                         if hook.get("event") == event and any(
-                                f"devId={dev.id}&" in u
+                                hook_dev_id(u) == dev.id
                                 for u in hook.get("urls", [])):
                             self.logger.debug(
                                 f'[{dev.name}] {event} webhook already present')
@@ -2351,6 +2719,28 @@ class Plugin(indigo.PluginBase):
                 collisions.append((ident, keeper, losers))
         return dup_ids, collisions
 
+    def _hook_problem(self, dev, ip, hooks):
+        """What is wrong with a mains device's hook list, in words, or "".
+
+        Missing wanted hooks, and any hook on the Shelly that classify_hooks
+        would remove (stray, doubled, pointing at an old address).
+        """
+        wanted, _verified = self._wanted_webhooks(dev, ip)
+        if wanted is None:
+            ours = [u for h in hooks for u in h.get("urls", [])
+                    if is_plugin_hook_url(u) and hook_dev_id(u) == dev.id]
+            return "" if ours else "none present"
+        wanted_urls = {u for _, u, _ in wanted}
+        delete, have = classify_hooks(hooks, ip, wanted_urls, self._live_devices_by_id(),
+                                      self.server_ip, self.webhook_port)
+        missing = len(wanted_urls - have)
+        parts = []
+        if delete:
+            parts.append(f"{len(delete)} to remove")
+        if missing:
+            parts.append(f"{missing} missing")
+        return ", ".join(parts)
+
     def _check_webhook_health(self):
         """Verify webhooks are still registered on all non-battery devices and repair if not."""
         if not self.server_ip:
@@ -2389,7 +2779,8 @@ class Plugin(indigo.PluginBase):
                     resp     = self._rget(f"http://{ip}/rpc/Webhook.List", timeout=3)
                     hooks    = resp.json().get("hooks", []) if resp.status_code == 200 else []
                     all_urls = [u for h in hooks for u in h.get("urls", [])]
-                    if not any(f"shellyBluEvent?devId={dev.id}" in u for u in all_urls):
+                    if not any("/shellyBluEvent?" in u and hook_dev_id(u) == dev.id
+                               for u in all_urls):
                         log(f'[{dev.name}] BLU webhooks missing - repairing ...')
                         self._configure_blu_webhooks(ip, dev)
                         repaired += 1
@@ -2403,11 +2794,14 @@ class Plugin(indigo.PluginBase):
                 resp = self._rget(f"http://{ip}/rpc/Webhook.List", timeout=3)
                 if resp.status_code != 200:
                     continue
-                hooks    = resp.json().get("hooks", [])
-                all_urls = [u for h in hooks for u in h.get("urls", [])]
-                # Check at least one webhook for this device exists
-                if any(f"devId={dev.id}" in u for u in all_urls):
-                    self.webhook_repair_fails.pop(dev.id, None)   # present -> all good
+                hooks = resp.json().get("hooks", [])
+                # v3.19.0: "at least one hook for this device exists" was the
+                # whole test, so a plug carrying another device's hooks, or
+                # every hook twice, passed for ever. Now the device's whole
+                # hook list is judged: anything stray, doubled or missing.
+                problem = self._hook_problem(dev, ip, hooks)
+                if not problem:
+                    self.webhook_repair_fails.pop(dev.id, None)   # all good
                     continue
 
                 fails = self.webhook_repair_fails.get(dev.id, 0)
@@ -2420,16 +2814,15 @@ class Plugin(indigo.PluginBase):
                     )
                     continue
 
-                log(f'[{dev.name}] Webhooks missing - repairing ...')
+                log(f'[{dev.name}] Webhooks need repair ({problem}) - repairing ...')
                 self._configure_webhooks(dev)
 
                 # Did the repair actually stick? (flaky link / duplicate clobber)
                 stuck = False
                 try:
-                    recheck  = self._rget(f"http://{ip}/rpc/Webhook.List", timeout=3)
-                    rhooks   = recheck.json().get("hooks", []) if recheck.status_code == 200 else []
-                    stuck    = any(f"devId={dev.id}" in u
-                                   for h in rhooks for u in h.get("urls", []))
+                    recheck = self._rget(f"http://{ip}/rpc/Webhook.List", timeout=3)
+                    rhooks  = recheck.json().get("hooks", []) if recheck.status_code == 200 else None
+                    stuck   = rhooks is not None and not self._hook_problem(dev, ip, rhooks)
                 except Exception:
                     stuck = False
 
@@ -3371,9 +3764,10 @@ class Plugin(indigo.PluginBase):
         except Exception:
             return "light"       # probe failed — don't persist a guess
         try:
-            props = dict(dev.pluginProps)
-            props["rgbw_profile"] = prof
-            dev.replacePluginPropsOnServer(props)
+            with self._props_lock:   # the same RMW guard as every other props write
+                props = dict(dev.pluginProps)
+                props["rgbw_profile"] = prof
+                dev.replacePluginPropsOnServer(props)
         except Exception:
             pass
         return prof
@@ -3429,11 +3823,36 @@ class Plugin(indigo.PluginBase):
             return None
 
     def _rget(self, url, params=None, timeout=None):
-        """Wrapper around requests.get() with optional digest auth support."""
+        """requests.get() for a Shelly: digest auth when configured, and HTTPS
+        for a device that insists on it.
+
+        v3.19.0: a Shelly that left the factory on 2.0.0+ firmware answers
+        plain HTTP with a redirect to HTTPS ("enhanced security"). requests
+        followed it and then failed the certificate check, so such a device
+        could never be reached. The first redirect is caught, the host is
+        remembered, and every later call to it goes straight to HTTPS.
+        """
         t    = timeout if timeout is not None else self.timeout
         auth = (HTTPDigestAuth(self.shelly_user, self.shelly_pass)
                 if self.shelly_user and self.shelly_pass else None)
-        return requests.get(url, params=params, timeout=t, auth=auth)
+        https_hosts = getattr(self, "_https_hosts", None)
+        host = urllib.parse.urlsplit(url).hostname or ""
+        if https_hosts is not None and host in https_hosts and url.startswith("http://"):
+            url = "https://" + url[len("http://"):]
+        secure = url.startswith("https://")
+        resp = requests.get(url, params=params, timeout=t, auth=auth,
+                            allow_redirects=False, verify=not secure)
+        if (not secure and https_hosts is not None
+                and resp.status_code in (301, 302, 303, 307, 308)
+                and str(resp.headers.get("Location", "")).startswith("https://")):
+            if host not in https_hosts:
+                https_hosts.add(host)
+                log(f"{host} only accepts HTTPS (Shelly enhanced security) - "
+                    f"switching to HTTPS for this device")
+            url = "https://" + url[len("http://"):]
+            resp = requests.get(url, params=params, timeout=t, auth=auth,
+                                allow_redirects=False, verify=False)
+        return resp
 
     def _set_output(self, dev, ip, on):
         """Dispatch on/off to the correct RPC component for this device type."""
@@ -3606,7 +4025,7 @@ class Plugin(indigo.PluginBase):
                     yield key, v
 
         seen_csv = dev.pluginProps.get("seenDynamicKeys", "")
-        seen = set(s for s in seen_csv.split(",") if s and self._is_valid_state_id(s))
+        seen = parse_seen_keys(seen_csv, self._is_valid_state_id)
         pending = []
         new_keys = []
 
@@ -3622,14 +4041,19 @@ class Plugin(indigo.PluginBase):
                 state_val = str(raw_val)[:512]
             pending.append((state_key, state_val))
             if state_key not in seen:
-                seen.add(state_key)
+                # v3.19.0: record the type the field ARRIVED with. The state
+                # list used to type a new key from its current value, which is
+                # None until the first write, so every new field was declared
+                # a String and later retyped -- and SQL Logger answers a
+                # retyped state with a second column (wifirssi_<n>).
+                seen[state_key] = state_type_code(state_val)
                 new_keys.append(state_key)
 
         if new_keys:
             try:
                 with self._props_lock:   # atomic RMW vs the MAC backfill (v3.14)
                     new_props = dict(dev.pluginProps)
-                    new_props["seenDynamicKeys"] = ",".join(sorted(seen))
+                    new_props["seenDynamicKeys"] = format_seen_keys(seen)
                     dev.replacePluginPropsOnServer(new_props)
                 indigo.devices[dev.id].stateListOrDisplayStateIdChanged()
                 log(f'[{dev.name}] imported {len(new_keys)} new field(s): {new_keys}')
@@ -3664,22 +4088,25 @@ class Plugin(indigo.PluginBase):
             return state_list
         existing = set()
         try:
-            for s in state_list:
-                k = s.get("Key") if hasattr(s, "get") else s["Key"]
+            for st in state_list:
+                k = st.get("Key") if hasattr(st, "get") else st["Key"]
                 if k:
                     existing.add(k)
         except Exception:
             existing = set()
-        for key in seen_csv.split(","):
-            key = key.strip()
-            if not key or key in existing or not self._is_valid_state_id(key):
+        for key, code in parse_seen_keys(seen_csv, self._is_valid_state_id).items():
+            if key in existing:
                 continue
             label = key[:1].upper() + key[1:]
-            current = dev.states.get(key) if hasattr(dev, "states") else None
+            if code is None:
+                # Recorded before v3.19.0 without a type: those states all
+                # hold a value by now, so the current value is a safe guide.
+                current = dev.states.get(key) if hasattr(dev, "states") else None
+                code = state_type_code(current) if current is not None else "s"
             try:
-                if isinstance(current, bool):
+                if code == "b":
                     state_list.append(self.getDeviceStateDictForBoolTrueFalseType(key, label, label))
-                elif isinstance(current, (int, float)):
+                elif code == "n":
                     state_list.append(self.getDeviceStateDictForNumberType(key, label, label))
                 else:
                     state_list.append(self.getDeviceStateDictForStringType(key, label, label))
@@ -3803,6 +4230,25 @@ class Plugin(indigo.PluginBase):
             # reading is also low. While pending we return the last known-good
             # figures rather than a fabricated 0, matching how the callers already
             # preserve energy when a reading is missing entirely.
+            # v3.19.0 — UNDO A RESET THAT WAS NOT ONE. Two low readings can
+            # arrive seconds apart (a restart polls every device at once), so
+            # the two-strike rule can still commit a glitch. A genuine reset
+            # starts again from zero and cannot climb back to the old lifetime
+            # total within the day; a glitch does exactly that on the next good
+            # reading. When it does, put the old baselines back.
+            undo = entry.get("reset_undo")
+            if undo:
+                if undo.get("date") != today_str:
+                    entry.pop("reset_undo", None)
+                elif total_wh >= undo.get("day_baseline_wh", float("inf")):
+                    entry["day_baseline_wh"]   = undo["day_baseline_wh"]
+                    entry["month_baseline_wh"] = undo.get("month_baseline_wh",
+                                                          undo["day_baseline_wh"])
+                    entry.pop("reset_undo", None)
+                    log(f"[dev {dev_id}] cumulative energy is back to {total_wh:.1f} Wh — "
+                        f"the earlier counter reset was a glitch; baselines restored",
+                        level="WARNING")
+
             have_baseline = "day_baseline_wh" in entry
             is_low        = have_baseline and total_wh < entry.get("day_baseline_wh", 0)
             if is_low:
@@ -3822,6 +4268,13 @@ class Plugin(indigo.PluginBase):
                     f"treating as a genuine counter reset and re-baselining",
                     level="WARNING")
                 entry.pop("pending_reset_wh", None)
+                if entry.get("day_date") == today_str:
+                    entry["reset_undo"] = {
+                        "date":              today_str,
+                        "day_baseline_wh":   entry.get("day_baseline_wh", total_wh),
+                        "month_baseline_wh": entry.get("month_baseline_wh",
+                                                       entry.get("day_baseline_wh", total_wh)),
+                    }
                 entry["day_baseline_wh"]   = total_wh
                 entry["day_date"]          = today_str
                 entry["month_baseline_wh"] = total_wh
@@ -3892,8 +4345,16 @@ class Plugin(indigo.PluginBase):
                 continue
             if dev.deviceTypeId == "shellyRelay" and not dev.pluginProps.get("has_pm", True):
                 continue
-            ip = dev.pluginProps.get("ip_address", "").strip()
-            if not ip:
+            if not dev.pluginProps.get("ip_address", "").strip():
+                continue
+            # v3.19.0: a device whose baseline already moved to today -- the
+            # first poll after a restart across midnight rolls it over in
+            # _calc_energy -- has nothing to bank, and banking again wrote a
+            # second, near-zero history row for the same date.
+            with self._energy_lock:
+                already = self.energy_data.get(str(dev.id), {}).get("day_date") == today_str
+            if already:
+                self.logger.debug(f"[{dev.name}] Midnight: already rolled over to {today_str}")
                 continue
             # v3.16.3: a device already known offline has nothing to read, so both
             # warning branches below would fire every midnight for as long as it
@@ -3905,6 +4366,14 @@ class Plugin(indigo.PluginBase):
             if not dev.states.get("deviceOnline", True):
                 self.logger.debug(
                     f"[{dev.name}] Midnight: offline, baseline left unchanged")
+                continue
+            # v3.19.0: through the identity gate, like every poll. The reset
+            # read the stored address directly, so a different plug answering
+            # there at midnight would have become this device's baseline.
+            ip = self._target_ip(dev)
+            if not ip:
+                self.logger.debug(
+                    f"[{dev.name}] Midnight: identity not confirmed, baseline left unchanged")
                 continue
             try:
                 if dev.deviceTypeId == "shellyEM":
@@ -3943,6 +4412,20 @@ class Plugin(indigo.PluginBase):
                 with self._energy_lock:
                     entry = self.energy_data.get(key, {})
 
+                    # v3.19.0: a reading BELOW the running baseline is the
+                    # phantom-zero shape (a plug reporting aenergy.total 0).
+                    # Taking it as the new baseline let the next poll publish
+                    # the whole lifetime total as today -- the 3446 kWh fault
+                    # by the back door, since this path skipped the two-strike
+                    # rule. Leave it for _calc_energy, which applies the rule
+                    # and rolls the day over itself once the reading is real.
+                    base = entry.get("day_baseline_wh")
+                    if base is not None and total_wh < base:
+                        log(f'[{dev.name}] Midnight: energy counter read '
+                            f'{total_wh:.1f} Wh, below the {base:.1f} Wh baseline '
+                            f'- not trusted, left for the next poll to confirm')
+                        continue
+
                     # Append yesterday's total to rolling history before resetting
                     yesterday_kwh = max(0.0, (total_wh - entry.get("day_baseline_wh", total_wh)) / 1000.0)
                     if "history" not in entry:
@@ -3975,6 +4458,11 @@ class Plugin(indigo.PluginBase):
                 # problem and keeps its colour.
                 log(f'[{dev.name}] Midnight reset failed: {exc}', level="WARNING")
 
+        # v3.19.0: record the date WITH the baselines it describes. It was set
+        # after this save, in memory only, so a crash before the next save made
+        # the restart run the whole reset again in the middle of the day.
+        with self._energy_lock:
+            self.energy_data.setdefault("__meta__", {})["last_date"] = today_str
         self._save_energy_data()
 
     # ---------------------------------------------------------------------------
@@ -4265,7 +4753,7 @@ class Plugin(indigo.PluginBase):
                 name  = data.get("name",  "")
                 mac   = data.get("mac",   "")
                 gen   = data.get("gen",   "?")
-                info  = APP_INFO.get(app)
+                info  = app_info_for(app)
 
                 if info:
                     label, has_pm, base_type, num_ch = info
@@ -4332,13 +4820,12 @@ class Plugin(indigo.PluginBase):
                         # this same run, and the new IP is now taken.
                         existing_ips.discard(old_ip)
                         existing_ips.add(ip)
+                        # The address change restarts the device, and the
+                        # restart re-points its webhooks. A second configure
+                        # started here raced it (v3.19.0).
                         log(
                             f"[Discovery] {old_dev.name:<30} IP updated {old_ip} -> {ip} -- reconfiguring webhooks"
                         )
-                        fresh = indigo.devices[old_dev.id]
-                        threading.Thread(
-                            target=self._configure_webhooks, args=(fresh,), daemon=True
-                        ).start()
                     elif was_offline:
                         log(
                             f"[Discovery] {old_dev.name:<30} {ip:<18} -- reachable but offline, repairing webhooks"

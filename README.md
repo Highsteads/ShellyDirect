@@ -2,7 +2,7 @@
 
 Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo](https://www.indigodomo.com/). No cloud, no MQTT — the plugin talks to each Shelly straight over your LAN, and the Shellys push their state changes back to Indigo over a small built-in webhook listener.
 
-**Version:** 3.18.4 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 3.19.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 *Developed and tested on Indigo 2025.2 / Python 3.13. Older Indigo releases that meet the minimum API version above should also work — the API floor is what Indigo's plugin loader actually checks.*
 
@@ -32,6 +32,14 @@ Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo
 
 ## Recent changes
 
+- **v3.19.0** — a full review, with the fixes that came out of it.
+  - **A plug could report as another device.** When two devices once shared an address, the plug left holding the other device's webhooks kept them for ever, because the plugin only removed a webhook whose device had been deleted. So switching that plug would have written its on/off, and "online", into the other device. The plugin now removes any webhook that belongs to a device on a different Shelly, points at an old Indigo address or port, or is registered twice. The listener also ignores a webhook that did not come from the Shelly it names, and removes it from the device that sent it. There is a tick box to turn that check off if a router between Indigo and your Shellys rewrites their addresses.
+  - **Button and input webhooks now work.** The plugin had been asking for input events under names Shelly does not use, so no i4, Uni, Plus 1 or Mini input ever pushed a press to Indigo, and the refusal was logged as "no input component". They now use Shelly's real event names, and are only asked for on devices that actually have inputs.
+  - **Each webhook set-up runs one at a time per device.** Two could overlap after a settings change, and some plugs ended up with every webhook registered twice. A device also no longer restarts when the plugin saves something it learned about it, such as its MAC address.
+  - **The midnight energy reset is guarded like every poll.** It now checks the device's identity, ignores a reading below the day's starting figure (the shape of the fault that once showed 3446 kWh in a day), and does not write a second history row for a day that is already counted. A counter reset that turns out to be a glitch is undone when the real figure comes back.
+  - **New fields keep their type.** A field a Shelly started reporting was always created as text and changed type later, which gave SQL Logger a second column for it.
+  - **Shellys bought new work.** Devices that leave the factory on firmware 2.0 or later only accept HTTPS. The plugin now switches to HTTPS for any device that asks for it.
+  - **The model table is up to date** with the Gen 3 and Gen 4 range, including Zigbee builds and Pro devices with the add-on fitted. "Plug UK Gen 4" was removed: there is no such product.
 - **v3.18.4** — **Your plugs no longer fill SQL Logger's history with counters.** Every Shelly reports a running on-time counter, its uptime and its WiFi signal, and they change on nearly every check, so SQL Logger was saving a history row about every 36 seconds per plug for numbers nobody charts. The plugin now tells SQL Logger to skip those three. Power, voltage, current, energy and temperature are logged exactly as before, anything you already told SQL Logger to skip is kept, and existing history is untouched.
 - **v3.18.3** — no change to what the plugin does. Some comments in the plugin, and the tests, used the real network hardware addresses of Shelly plugs from a working installation as their examples. They are now clearly made-up example values.
 - **v3.18.2** — a fix for something that has not gone wrong here yet, and would have been baffling if it had. A Shelly BLU button has no network of its own, so it is recorded against the address of the mains device that relays it — which means a gateway and everything it relays share one address. When a webhook arrived quoting a device the plugin no longer recognised, the repair looked that address up and took whichever device it found first, and on an unlucky ordering that was a button rather than the gateway. It would then have reconfigured the button's webhooks and left the gateway exactly as broken as it was. The two other places in the plugin that look a device up by address already knew to keep the two kinds apart; this one did not. Found by sweeping the whole estate for decisions written out in more than one place after the same fault turned up in a watchdog elsewhere.
@@ -72,21 +80,21 @@ Headline features:
 
 ## Supported devices
 
-Discovery recognises a Shelly by the `app` name it reports and creates the matching Indigo device type. Anything not in the list below is still created as a basic relay so you are not stuck.
+Discovery recognises a Shelly by the `app` name it reports and creates the matching Indigo device type. A model not in the list below is classified from the parts it reports (switch, light, cover, meter, inputs), so a new model usually works without a plugin update.
 
 | Indigo device type | Shelly models (Gen 2/3/4) |
 |--------------------|----------------------------|
-| **Relay** (`shellyRelay`) | Plus Plug (UK/S/IT/US), Plug UK Gen 4, Plug S Gen 3, Plus 1 / 1PM, Pro 1 / 1PM, Pro 1 Gen 3 / 1PM Gen 3, 1 Mini Gen 3 / 1PM Mini Gen 3 (incl. DC), Shelly 1 Gen 4 / 1PM Gen 4 |
-| **Relay, multi-channel** | Plus 2PM, Pro 2 / 2PM (2 channels), Pro 4PM (4 channels) — discovery creates one device per channel and probes for cover mode |
+| **Relay** (`shellyRelay`) | Plus Plug (UK/S/IT/US), Plug S Gen 3, Outdoor Plug S Gen 3, Plus 1 / 1PM (and Mini), Pro 1 / 1PM, 1 / 1PM / 1L Gen 3, 1 Mini / 1PM Mini Gen 3 (incl. DC), Shelly 1 / 1PM / 1L Gen 4, 1 Mini / 1PM Mini Gen 4 |
+| **Relay, multi-channel** | Plus 2PM, Pro 2 / 2PM, 2PM / 2L Gen 3, 2PM / 2L Gen 4 (2 channels), Pro 3 (3 channels), Pro 4PM, Power Strip Gen 4 (4 channels) — discovery creates one device per channel and probes for cover mode |
 | **Cover / roller** (`shellyCover`) | Any 2-channel relay configured in cover mode (detected automatically) |
-| **Dimmer** (`shellyDimmer`) | Plus Dimmer 0/1-10V, Wall Dimmer, Pro Dimmer 1PM / 2PM |
+| **Dimmer** (`shellyDimmer`) | Plus 0-10V Dimmer, Plus Wall Dimmer, Dimmer Gen 3 / Gen 4, Dimmer 0/1-10V PM Gen 3 / Gen 4, Pro Dimmer 1PM / 2PM (one device per channel) |
 | **RGBW** (`shellyRGBW`) | Plus RGBW PM |
-| **Energy meter** (`shellyEM`) | Pro EM, Pro 3EM, Pro 3EM-400, 3EM Gen 3 |
+| **Energy meter** (`shellyEM`) | Pro EM, EM Gen 3, Pro 3EM, Pro 3EM-400, 3EM Gen 3 |
 | **Universal** (`shellyUni`) | Plus Uni (two inputs, two voltmeters, one switch) |
-| **Input** (`shellyI4`) | Plus i4, Plus i4 DC (four inputs) |
-| **Temperature / Humidity** (`shellyHT`) | Plus H&T, Plus H&T Gen 3 |
+| **Input** (`shellyI4`) | Plus i4, Plus i4 DC, i4 Gen 3 (four inputs) |
+| **Temperature / Humidity** (`shellyHT`) | Plus H&T, H&T Gen 3 |
 | **Smoke** (`shellySmoke`) | Plus Smoke |
-| **Flood** (`shellyFlood`) | Plus Flood |
+| **Flood** (`shellyFlood`) | Flood Gen 4 |
 | **BLU Button** (`shellyBluButton`) | Shelly BLU Button (via a Shelly Plus/Pro BLE gateway) |
 | **BLU RC Button 4** (`shellyBluRC4`) | Shelly BLU RC Button 4 (via a BLE gateway) |
 
@@ -113,6 +121,7 @@ Open **Plugins → Shelly Direct → Configure** and fill in:
 | **HTTP Request Timeout** | How long to wait for a Shelly to answer (2, 3, 5 or 10 seconds). 3 is a good default. |
 | **Shelly Username / Password** | Optional. Only needed if your Shellys have authentication switched on. If set, Digest Auth is used on every request, and all devices must share the same credentials. |
 | **Daily Firmware Update Notifications** | Check all devices once a day for available firmware and report them in the log (and via Pushover if you run the Pushover plugin). |
+| **Check Webhook Sender** | On by default. Ignore a webhook unless it comes from the Shelly it names. Untick only if a router between Indigo and your Shellys rewrites their addresses. |
 | **Offline Detection Threshold** | Mark a device offline if nothing is heard from it (poll or webhook) within this window. |
 | **Log Level** | How chatty the log is, from Detailed Debugging down to Errors Only. |
 
@@ -146,7 +155,11 @@ Indigo Server IP and the Shelly credentials can also be read from a shared `Indi
 
 **Webhooks (push).** On startup, and whenever a device's IP changes, the plugin registers webhooks on each Shelly so the device pushes its state changes to Indigo. The plugin runs its own small HTTP listener for this on **port 8178** — that port must be reachable from your Shellys to the Indigo Mac. Using a dedicated port keeps the plugin clear of Indigo's own web server and its authentication.
 
-If a Shelly is unreachable when the plugin tries to register its webhooks (for example a sleepy battery sensor, or a flaky link), it carries on in poll-only mode and tells you so in the log. A webhook health check runs every six hours and quietly repairs any that have gone missing, and if a stale webhook arrives from a device that has been deleted and recreated, the plugin matches it by source IP and re-registers it automatically.
+If a Shelly is unreachable when the plugin tries to register its webhooks (for example a sleepy battery sensor, or a flaky link), it carries on in poll-only mode and tells you so in the log. A webhook health check runs every six hours. It adds any that have gone missing and removes any that no longer belong on that Shelly: a webhook for a deleted device, for a device that now lives on a different Shelly, one pointing at an old Indigo address or port, or a second copy of one already there. Webhooks anything else put on your Shellys are never touched.
+
+The listener only believes a webhook that comes from the Shelly it names. One arriving from any other address is ignored, reported once, and removed from the device that sent it. If a router between Indigo and your Shellys rewrites their addresses (NAT), untick **Check Webhook Sender** in the plugin settings.
+
+**HTTPS.** A Shelly that left the factory on firmware 2.0 or later only accepts HTTPS. The plugin notices the first time a device asks for it and uses HTTPS for that device from then on. Shelly signs these certificates itself, so the plugin does not check them, which is no weaker than the plain HTTP every other Shelly uses on your LAN.
 
 **Polling (pull).** Alongside the push model, every non-battery device is polled on its configured interval as a backstop, so state stays correct even if a webhook is missed. If a device fails to answer three polls in a row it is marked offline and the Device Went Offline trigger fires (unless you have suppressed alerts for it).
 

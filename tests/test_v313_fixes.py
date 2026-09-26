@@ -194,6 +194,14 @@ def _health_receiver(plugin_mod, devices, device_hooks, repair_sticks):
         _duplicate_device_ids=lambda: (set(), []),
         _rget=_rget,
         _configure_webhooks=_configure_webhooks,
+        # These tests are about the back-off machine, so the judgement of a
+        # hook list is the simplest one: any hook for this device will do. The
+        # real judgement (classify_hooks) has its own tests in
+        # test_v319_webhook_ownership.py.
+        _hook_problem=lambda dev, ip, hooks: (
+            "" if any(plugin_mod.hook_dev_id(u) == dev.id
+                      for h in hooks for u in h.get("urls", []))
+            else "none present"),
     )
     return receiver, state
 

@@ -74,6 +74,11 @@ class _Host:
         except (TypeError, ValueError):
             return default
 
+    def _target_ip(self, dev):
+        # v3.19.0: the reset goes through the identity gate. These tests are
+        # about the offline skip, so the gate simply confirms the stored address.
+        return dev.pluginProps.get("ip_address", "").strip() or None
+
     def _rget(self, url):
         self.reads.append(url)
 

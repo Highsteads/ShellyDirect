@@ -60,11 +60,11 @@ CASES: list[ShellyCase] = [
     _real("relay_plug_pluspluguk", [("shellyRelay", 0)],
           note="Shelly Plus Plug UK — app in APP_INFO (primary path)"),
     _real("relay_garage_mini1g4", [("shellyRelay", 0)],
-          note="Shelly 1 Mini Gen 4 — app NOT in APP_INFO, classified from "
-               "switch:0 via the fallback (the valuable real case)"),
+          note="Shelly 1 Mini Gen 4 — in APP_INFO from v3.19.0 (it was "
+               "classified from switch:0 by the fallback before that)"),
 
     # ── Synthetic: app-table hits (primary path coverage) ────────────────────
-    _syn("syn_dimmer", "PlusDimmerUL", ["light:0", "sys"],
+    _syn("syn_dimmer", "Plus10V", ["light:0", "sys"],
          [("shellyDimmer", 0)], note="dimmer via APP_INFO"),
     _syn("syn_rgbw", "PlusRGBWPM", ["rgb:0", "sys"],
          [("shellyRGBW", 0)], note="RGBW via APP_INFO"),
@@ -82,7 +82,19 @@ CASES: list[ShellyCase] = [
     _syn("syn_ht", "PlusHT", ["temperature:0", "humidity:0"],
          [("shellyHT", 0)], note="battery H&T sensor via APP_INFO"),
 
+    # ── Synthetic: build suffixes (v3.19.0) ──────────────────────────────────
+    _syn("syn_zigbee_build", "S2PMG4ZB", ["switch:0", "switch:1", "sys"],
+         [("shellyRelay", 0), ("shellyRelay", 1)],
+         note="Zigbee/Matter firmware appends ZB to the app name"),
+    _syn("syn_pro_addon", "Pro1PMProAddon", ["switch:0", "sys"],
+         [("shellyRelay", 0)],
+         note="a Pro with the add-on fitted appends ProAddon"),
+
     # ── Synthetic: fallback (unknown app, classify from components) ───────────
+    _syn("fb_pro_dimmer_2ch", "ProDimmerx", ["light:0", "light:1", "sys"],
+         [("shellyDimmer", 0), ("shellyDimmer", 1)],
+         note="Pro Dimmer uses one app for 1 and 2 channels, so the component "
+              "count decides"),
     _syn("fb_cover", "NewRollerX", ["cover:0", "sys"],
          [("shellyCover", 0)], note="unknown app, cover:0 -> cover"),
     _syn("fb_dimmer", "NewDimmerX", ["light:0"],

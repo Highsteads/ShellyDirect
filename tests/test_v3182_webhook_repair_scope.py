@@ -49,10 +49,15 @@ def _run_repair(plugin_mod, monkeypatch, devices):
     chosen = []
     monkeypatch.setattr(plugin_mod.indigo.devices, "iter",
                         lambda *_a, **_k: list(devices), raising=False)
+    # Only a CONFIGURE counts as choosing a device. From v3.19.0 a repair that
+    # finds no device of ours removes the dead hooks directly instead, which
+    # is also a thread but reconfigures nothing.
     monkeypatch.setattr(plugin_mod.threading, "Thread",
                         lambda target=None, args=(), daemon=None:
                             types.SimpleNamespace(
-                                start=lambda: chosen.append(args[0])))
+                                start=lambda: chosen.append(args[0])
+                                if getattr(target, "__name__", "") == "_configure_webhooks"
+                                else None))
     plugin._repair_stale_webhook(GATEWAY_IP, stale_dev_id=999)
     return chosen
 

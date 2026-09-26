@@ -242,7 +242,8 @@ def _rgbw_receiver(config_payload, status=200):
     def _rget(url, params=None, timeout=None):
         assert "Shelly.GetConfig" in url
         return FakeResp(config_payload, status)
-    return types.SimpleNamespace(_rget=_rget)
+    # v3.19.0: the profile save takes the props lock like every other write.
+    return types.SimpleNamespace(_rget=_rget, _props_lock=threading.RLock())
 
 
 def test_rgbw_profile_detected_and_cached(plugin_mod):

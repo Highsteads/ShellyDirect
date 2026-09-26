@@ -58,6 +58,13 @@ Read from IndigoSecrets.SHELLY_USERNAME / SHELLY_PASSWORD first; these fields ar
 		<Label>TCP port the plugin listens on for device webhooks. Change only if another service already uses 8178, then reload the plugin (existing webhooks are re-pointed automatically).</Label>
 	</Field>
 
+	<Field id="webhook_source_check" type="checkbox" defaultValue="true">
+		<Label>Check Webhook Sender:</Label>
+	</Field>
+	<Field id="hlpWebhookSource" type="label" fontSize="mini" alignWithControl="true">
+		<Label>Ignore a webhook unless it comes from the Shelly it names, and remove the stray webhook from the device that sent it. Untick only if a router between Indigo and your Shellys rewrites their addresses (NAT).</Label>
+	</Field>
+
 	<Field id="battery_stale_hours" type="textfield" defaultValue="12">
 		<Label>Battery Sensor Stale Threshold (hours):</Label>
 	</Field>
