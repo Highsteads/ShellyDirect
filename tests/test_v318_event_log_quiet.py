@@ -432,7 +432,11 @@ def test_closedPrefsConfigUi_mirrors_startup():
     src = io.open(PLUGIN_PY, encoding="utf-8").read()
     tree = ast.parse(src)
     for fname in ("__init__", "closedPrefsConfigUi"):
-        fn = next(n for n in ast.walk(tree)
+        # Inside class Plugin: the module has other classes with an __init__
+        # (ShellyLink, v4.0.0), and the first match would be the wrong one.
+        plugin_cls = next(n for n in tree.body
+                          if isinstance(n, ast.ClassDef) and n.name == "Plugin")
+        fn = next(n for n in plugin_cls.body
                   if isinstance(n, ast.FunctionDef) and n.name == fname)
         got = {c.value for c in ast.walk(fn)
                if isinstance(c, ast.Constant) and isinstance(c.value, str)}
@@ -458,7 +462,11 @@ def test_both_readers_coerce_the_pref_through_as_bool():
     tree = ast.parse(io.open(PLUGIN_PY, encoding="utf-8").read())
     seen = {}
     for fname in ("__init__", "closedPrefsConfigUi"):
-        fn = next(n for n in ast.walk(tree)
+        # Inside class Plugin: the module has other classes with an __init__
+        # (ShellyLink, v4.0.0), and the first match would be the wrong one.
+        plugin_cls = next(n for n in tree.body
+                          if isinstance(n, ast.ClassDef) and n.name == "Plugin")
+        fn = next(n for n in plugin_cls.body
                   if isinstance(n, ast.FunctionDef) and n.name == fname)
         for node in ast.walk(fn):
             if not isinstance(node, ast.Assign):
@@ -575,7 +583,11 @@ def test_no_cover_method_routes_through_the_narration_switch():
     tree = ast.parse(io.open(PLUGIN_PY, encoding="utf-8").read())
     checked = set()
     for fname in ("_cover_cmd", "actionCoverGoToPosition", "actionCoverSetTilt"):
-        fn = next(n for n in ast.walk(tree)
+        # Inside class Plugin: the module has other classes with an __init__
+        # (ShellyLink, v4.0.0), and the first match would be the wrong one.
+        plugin_cls = next(n for n in tree.body
+                          if isinstance(n, ast.ClassDef) and n.name == "Plugin")
+        fn = next(n for n in plugin_cls.body
                   if isinstance(n, ast.FunctionDef) and n.name == fname)
         called = {n.func.attr for n in ast.walk(fn)
                   if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)}

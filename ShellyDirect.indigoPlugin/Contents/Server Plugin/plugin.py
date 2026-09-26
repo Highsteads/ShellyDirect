@@ -3,9 +3,24 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 3.20.0)
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.0.0)
 # Date:        26-09-2026
-# Version:     3.20.0
+# Version:     4.0.0
+#
+# v4.0.0 (26-09-2026): LIVE CONNECTION. One websocket per Shelly box
+# (ShellyLink, websockets.sync.client). Shelly.GetStatus with a `src`
+# subscribes the socket; NotifyStatus deltas are merged into a cached status
+# per device (merge_status) -- a relay's on/off is written at once, power and
+# energy at most every LINK_APPLY_INTERVAL (30 s, the old poll pace) so
+# SQL Logger gets no more rows than before (a live load changes apower about once a second); other types are
+# polled when their component changes. NotifyEvent button presses fire
+# inputButtonPress, and a switch/button/input webhook is ignored while the
+# link is live (it would do everything twice). A full-status keepalive every
+# 60 s keeps devices online; polling drops to 300 s while live and returns to
+# normal when the link drops. Identity: the MAC in each message's `src` must
+# match. Leftover ble.scan_result events (Home Assistant's BLE script) are
+# dropped before parsing. Not used with Shelly authentication. Pref
+# live_connection (default on); requirements.txt gains websockets.
 #
 # v3.20.0 (26-09-2026): NEW FEATURES from the full review.
 # * Price light: plugs with an LED ring (pluguk_ui / plugs_ui) show the
@@ -1004,6 +1019,157 @@ def price_band(pence, cheap_below, peak_above):
 
 
 # ---------------------------------------------------------------------------
+# Live connection (v4.0.0)
+#
+# One websocket per Shelly (per box, not per channel). Asking Shelly.GetStatus
+# with a `src` on the socket subscribes it: from then on the device pushes a
+# NotifyStatus delta for every change and a NotifyEvent for every button press,
+# the moment it happens. Polling drops to a slow backstop while the link is up.
+#
+# Measured live 26-09-2026 on a Plus Plug UK (2.0.1): a delta names only what
+# changed ({"switch:0": {"apower": 34.8}}), power changes about once a second
+# on a live load, and every message carries the device's MAC in `src`
+# ("shellypluspluguk-cc7b5c8a5138"). A leftover Home Assistant Bluetooth
+# script on a plug streams several ble.scan_result events a second, which are
+# dropped before they are even parsed.
+# ---------------------------------------------------------------------------
+LINK_KEEPALIVE        = 60     # seconds between full-status requests on a quiet link
+LINK_LIVE_WINDOW      = 150    # a link with nothing heard for this long is not live
+LINK_POLL_INTERVAL    = 300    # backstop poll while the link is live
+LINK_APPLY_INTERVAL   = 30     # pushed power readings are written at most this often --
+                               # the old poll pace, so SQL Logger gets no more rows than before
+LINK_BACKOFF          = (5, 120)
+LINK_SRC              = "indigo-shellydirect"
+_LINK_NOISE           = ('"ble.scan_result"', '"ble.scan_result_raw"')
+
+# Which status components belong to which device type (channel formatted in).
+LINK_COMPONENTS = {
+    "shellyRelay":  ("switch:{chan}",),
+    "shellyUni":    ("switch:0", "input:0", "input:1", "voltmeter:100", "voltmeter:101"),
+    "shellyCover":  ("cover:{chan}",),
+    "shellyDimmer": ("light:{chan}",),
+    "shellyRGBW":   ("rgb:{chan}", "rgbw:{chan}", "light:{chan}"),
+    "shellyI4":     ("input:0", "input:1", "input:2", "input:3"),
+    "shellyEM":     ("em:{chan}", "em1:{chan}", "emdata:{chan}", "em1data:{chan}"),
+}
+
+_PRESS_WORDS = {"single_push": "single", "double_push": "double",
+                "long_push": "long", "triple_push": "triple"}
+
+
+def link_components(type_id, chan):
+    return tuple(c.format(chan=chan) for c in LINK_COMPONENTS.get(type_id, ()))
+
+
+def merge_status(cached, delta):
+    """A component status with a NotifyStatus delta laid over it. Nested
+    blocks (aenergy, temperature) are merged, not replaced."""
+    out = dict(cached or {})
+    for key, val in (delta or {}).items():
+        if isinstance(val, dict) and isinstance(out.get(key), dict):
+            merged = dict(out[key])
+            merged.update(val)
+            out[key] = merged
+        else:
+            out[key] = val
+    return out
+
+
+class ShellyLink:
+    """One live websocket to one Shelly, reconnecting with back-off until stopped.
+
+    `connect` is injectable so the session loop is tested without a network.
+    """
+
+    def __init__(self, plugin, ip, secure=False, connect=None):
+        self.plugin     = plugin
+        self.ip         = ip
+        self.secure     = secure
+        self.connected  = False
+        self.last_msg   = 0.0
+        self.stop_event = threading.Event()
+        self._connect   = connect
+        self.thread     = threading.Thread(target=self._run, daemon=True,
+                                           name=f"shelly-link-{ip}")
+
+    def start(self):
+        self.thread.start()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def live(self, now=None):
+        now = time.time() if now is None else now
+        return self.connected and (now - self.last_msg) < LINK_LIVE_WINDOW
+
+    def _connect_fn(self):
+        if self._connect is not None:
+            return self._connect
+        from websockets.sync.client import connect
+        return connect
+
+    def _run(self):
+        backoff = LINK_BACKOFF[0]
+        while not self.stop_event.is_set():
+            try:
+                self._session()
+                backoff = LINK_BACKOFF[0]
+            except Exception as exc:
+                self.plugin.logger.debug(f"live link {self.ip}: {type(exc).__name__}: {exc}")
+            was = self.connected
+            self.connected = False
+            if was:
+                self.plugin._link_down(self.ip)
+            if self.stop_event.wait(backoff):
+                break
+            backoff = min(backoff * 2, LINK_BACKOFF[1])
+
+    def _session(self):
+        import ssl as _ssl
+        scheme = "wss" if self.secure else "ws"
+        kwargs = {"open_timeout": 5, "close_timeout": 2, "compression": None,
+                  "max_size": 2 ** 20}
+        if self._connect is None:
+            kwargs["proxy"] = None
+        if self.secure:
+            ctx = _ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = _ssl.CERT_NONE
+            kwargs["ssl"] = ctx
+        with self._connect_fn()(f"{scheme}://{self.ip}/rpc", **kwargs) as ws:
+            req = 0
+
+            def ask():
+                nonlocal req
+                req += 1
+                ws.send(json.dumps({"id": req, "src": LINK_SRC, "method": "Shelly.GetStatus"}))
+
+            ask()
+            last_ask = time.time()
+            while not self.stop_event.is_set():
+                if time.time() - last_ask >= LINK_KEEPALIVE:
+                    ask()
+                    last_ask = time.time()
+                try:
+                    raw = ws.recv(timeout=1.0)
+                except TimeoutError:
+                    continue
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8", "replace")
+                if any(noise in raw for noise in _LINK_NOISE):
+                    continue
+                try:
+                    msg = json.loads(raw)
+                except ValueError:
+                    continue
+                self.last_msg = time.time()
+                if not self.connected:
+                    self.connected = True
+                    self.plugin._link_up(self.ip)
+                self.plugin._on_link_message(self.ip, msg)
+
+
+# ---------------------------------------------------------------------------
 # APP_INFO  {app_field: (display_label, has_pm, device_type_id, num_channels)}
 # device_type_id matches Devices.xml <Device id="...">
 # num_channels > 1 triggers multi-device creation in discovery
@@ -1359,6 +1525,15 @@ class Plugin(indigo.PluginBase):
         self._price_pence      = None
         self._firmware_busy    = threading.Lock()
         self._obj_names        = {}   # {gateway ip: {obj_id: name}} BTHome object names
+
+        # ── v4.0.0 live connection ──────────────────────────────────────────
+        self.live_connection   = as_bool(prefs.get("live_connection"), True)
+        self._links            = {}   # {ip: ShellyLink}
+        self._links_checked    = 0.0
+        self._link_status      = {}   # {dev_id: merged component status}
+        self._link_dirty       = {}   # {dev_id: ts of the first unapplied delta}
+        self._link_applied     = {}   # {dev_id: ts of the last pushed write}
+        self._link_warned      = set()# ips whose identity refusal was reported
         self._load_price_prefs(prefs)
 
         log_level = self._pref_int(prefs, "logLevel", logging.INFO)
@@ -1402,6 +1577,8 @@ class Plugin(indigo.PluginBase):
         # around this call, so an event-log line here said it a third time.
         self.logger.debug("Shelly Direct plugin stopping")
         self._save_energy_data()
+        for link in list(self._links.values()):
+            link.stop()
         self._stop_mdns()
         if self.webhook_server:
             self.webhook_server.shutdown()
@@ -1538,6 +1715,8 @@ class Plugin(indigo.PluginBase):
             self.webhook_source_check = as_bool(values_dict.get("webhook_source_check"), True)
             self._load_price_prefs(values_dict)
             self._price_checked = 0.0          # re-read the price on the next tick
+            self.live_connection = as_bool(values_dict.get("live_connection"), True)
+            self._links_checked = 0.0          # start or stop links on the next tick
             self.mac_verify_secs = max(60, self._pref_int(values_dict, "mac_verify_minutes",
                                                           MAC_VERIFY_MINUTES) * 60)
             self.indigo_log_handler.setLevel(self._pref_int(values_dict, "logLevel", logging.INFO))
@@ -1917,6 +2096,10 @@ class Plugin(indigo.PluginBase):
                 # v3.20.0: grouped offline / back-online reporting, and the
                 # electricity price on the plugs' LED rings.
                 self._flush_presence(now)
+                if (now - self._links_checked) >= 60:
+                    self._links_checked = now
+                    self._manage_links()
+                self._apply_link_updates(now)
                 if (now - self._price_checked) >= 60:
                     self._price_checked = now
                     threading.Thread(target=self._update_price_light, daemon=True).start()
@@ -1948,6 +2131,8 @@ class Plugin(indigo.PluginBase):
                         interval = self._pref_int(dev.pluginProps, "poll_interval", 30)
                         if self.fail_count.get(dev.id, 0) >= 3:
                             interval = max(interval, 300)   # offline back-off (v3.13)
+                        elif self._link_live_for(dev, now):
+                            interval = max(interval, LINK_POLL_INTERVAL)   # v4.0.0 backstop
                         if (now - self.last_polled.get(dev.id, 0)) >= interval:
                             self._poll_device(dev)
 
@@ -2417,6 +2602,14 @@ class Plugin(indigo.PluginBase):
                     if not plugin._webhook_source_ok(target, src):
                         plugin._refuse_foreign_webhook(target, src)
                         self.send_response(409); self.end_headers(); return
+
+                    # v4.0.0: while the live link to this Shelly is up it has
+                    # already delivered this change (and fired any button
+                    # trigger); acting on the webhook too would do it twice.
+                    ev = Plugin._qp(params, "type", "").lower()
+                    if ev in ("switch", "button", "input") and plugin._link_live_for(target):
+                        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+                        return
 
                     plugin.last_seen[dev_id] = time.time()
                     if not target.states.get("deviceOnline", True):
@@ -3987,6 +4180,169 @@ class Plugin(indigo.PluginBase):
         threading.Thread(target=_run, daemon=True).start()
         return True
 
+    # ---------------------------------------------------------------------------
+    # Live connection (v4.0.0) -- see ShellyLink
+    # ---------------------------------------------------------------------------
+
+    def _link_capable(self):
+        """Live links need the websockets package, and are not used while
+        Shelly authentication is on (a websocket carries its own digest
+        handshake, which is not implemented; those installs keep polling)."""
+        if not self.live_connection or self.shelly_user:
+            return False
+        try:
+            import websockets.sync.client  # noqa: F401
+            return True
+        except ImportError:
+            return False
+
+    def _link_devices(self, ip):
+        """This plugin's enabled mains devices at one address (channels share it)."""
+        return [d for d in indigo.devices.iter("self")
+                if d.enabled and d.configured
+                and d.deviceTypeId in LINK_COMPONENTS
+                and d.pluginProps.get("ip_address", "").strip() == ip]
+
+    def _manage_links(self):
+        """Start a link for every Shelly that should have one, stop the rest."""
+        wanted = set()
+        if self._link_capable():
+            for dev in indigo.devices.iter("self"):
+                if (dev.enabled and dev.configured and dev.deviceTypeId in LINK_COMPONENTS
+                        and dev.id not in self._dup_ids_cached()):
+                    ip = dev.pluginProps.get("ip_address", "").strip()
+                    if ip:
+                        wanted.add(ip)
+        elif self.live_connection and not self.shelly_user and not self._link_warned_import():
+            log("The live connection needs the websockets package, which is not "
+                "installed yet. Devices are polled meanwhile; restart the plugin once "
+                "Indigo has installed requirements.txt.", level="WARNING")
+        for ip in list(self._links):
+            if ip not in wanted:
+                self._links.pop(ip).stop()
+        for ip in sorted(wanted - set(self._links)):
+            link = ShellyLink(self, ip, secure=ip in self._https_hosts)
+            self._links[ip] = link
+            link.start()
+
+    def _link_warned_import(self):
+        warned = "__import__" in self._link_warned
+        self._link_warned.add("__import__")
+        return warned
+
+    def _link_up(self, ip):
+        self.logger.debug(f"live link to {ip} is up")
+
+    def _link_down(self, ip):
+        """Polling resumes its normal pace on its own: _link_live_for says no."""
+        self.logger.debug(f"live link to {ip} dropped; polling at the normal pace")
+
+    def _link_live_for(self, dev, now=None):
+        link = self._links.get(dev.pluginProps.get("ip_address", "").strip())
+        return bool(link and link.live(now))
+
+    def _link_identity_ok(self, ip, msg, devs):
+        """The device on the other end must be the one we think is there."""
+        src_mac = mac_from_instance(msg.get("src", ""))
+        stored = {normalise_mac(d.pluginProps.get("mac_address", "")) for d in devs} - {""}
+        if not src_mac or not stored or src_mac in stored:
+            self._link_warned.discard(ip)
+            return True
+        if ip not in self._link_warned:
+            self._link_warned.add(ip)
+            log(f"The Shelly answering at {ip} is {src_mac}, not "
+                f"{join_names(sorted(stored))}. Nothing from it is being recorded until "
+                f"the device is found again by MAC.", level="WARNING")
+        return False
+
+    def _on_link_message(self, ip, msg):
+        """Route one message from a live link (called on the link's thread)."""
+        try:
+            devs = self._link_devices(ip)
+            if not devs or not self._link_identity_ok(ip, msg, devs):
+                return
+            now = time.time()
+            if isinstance(msg.get("result"), dict):          # full status (keepalive)
+                status = msg["result"]
+                for dev in devs:
+                    chan = self._pref_int(dev.pluginProps, "channel_id", 0)
+                    for comp in link_components(dev.deviceTypeId, chan):
+                        if comp in status and isinstance(status[comp], dict):
+                            self._link_status[dev.id] = dict(status[comp])
+                            break
+                    if dev.deviceTypeId == "shellyRelay" and dev.id in self._link_status:
+                        self._link_dirty[dev.id] = 0.0       # apply on the next tick
+                    else:
+                        self._mark_online(dev)
+                return
+            method = msg.get("method")
+            params = msg.get("params") or {}
+            if method in ("NotifyStatus", "NotifyFullStatus"):
+                for dev in devs:
+                    chan = self._pref_int(dev.pluginProps, "channel_id", 0)
+                    for comp in link_components(dev.deviceTypeId, chan):
+                        delta = params.get(comp)
+                        if not isinstance(delta, dict):
+                            continue
+                        self._link_status[dev.id] = merge_status(self._link_status.get(dev.id), delta)
+                        if dev.deviceTypeId == "shellyRelay" and "output" in delta:
+                            # A switch changing is applied at once; power alone waits.
+                            self._link_dirty.pop(dev.id, None)
+                            self._link_applied[dev.id] = now
+                            self._apply_relay_status(dev, self._link_status[dev.id])
+                        else:
+                            self._link_dirty.setdefault(dev.id, now)
+            elif method == "NotifyEvent":
+                for event in params.get("events", []) or []:
+                    self._link_event(devs, event)
+        except Exception as exc:
+            self.logger.debug(f"live link {ip}: message not applied: {exc}")
+
+    def _link_event(self, devs, event):
+        """A button press pushed over the live link -> the same trigger the
+        webhook used to fire (the webhook is ignored while the link is live)."""
+        comp  = str(event.get("component", ""))
+        press = _PRESS_WORDS.get(str(event.get("event", "")))
+        if not comp.startswith("input:") or not press:
+            return
+        try:
+            inp = int(comp.split(":")[1])
+        except (IndexError, ValueError):
+            return
+        for dev in devs:
+            if dev.deviceTypeId not in INPUT_TYPES:
+                continue
+            if (dev.deviceTypeId == "shellyRelay"
+                    and self._pref_int(dev.pluginProps, "channel_id", 0) != 0):
+                continue          # the input belongs to the channel 0 device
+            self._log_activity(f'[live] "{dev.name}" input{inp} {press}_press')
+            self._fire_trigger("inputButtonPress", dev.id,
+                               {"input_id": str(inp), "press_type": press})
+            return
+
+    def _apply_link_updates(self, now):
+        """Write pushed readings at most every LINK_APPLY_INTERVAL seconds per
+        device. A relay is written from the merged status; other types are
+        polled, since their states come from several calls."""
+        for dev_id, first in list(self._link_dirty.items()):
+            if (now - self._link_applied.get(dev_id, 0)) < LINK_APPLY_INTERVAL:
+                continue
+            self._link_dirty.pop(dev_id, None)
+            self._link_applied[dev_id] = now
+            try:
+                dev = indigo.devices[dev_id]
+            except KeyError:
+                continue
+            if not dev.enabled:
+                continue
+            try:
+                if dev.deviceTypeId == "shellyRelay" and dev_id in self._link_status:
+                    self._apply_relay_status(dev, self._link_status[dev_id])
+                else:
+                    self._poll_device(dev)
+            except Exception as exc:
+                self.logger.debug(f"[{dev.name}] pushed update not applied: {exc}")
+
     def _poll_device(self, dev):
         dispatch = {
             "shellyRelay":  self._poll_relay,
@@ -4005,7 +4361,6 @@ class Plugin(indigo.PluginBase):
 
     def _poll_relay(self, dev):
         ip         = self._target_ip(dev)
-        has_pm     = dev.pluginProps.get("has_pm", True)
         addon_temp = dev.pluginProps.get("addon_temp", False)
         chan       = self._pref_int(dev.pluginProps, "channel_id", 0)
         # Identity gate (v3.16.0): None means the box at that address is not
@@ -4015,78 +4370,8 @@ class Plugin(indigo.PluginBase):
         try:
             resp = self._rget(f"http://{ip}/rpc/Switch.GetStatus?id={chan}")
             resp.raise_for_status()
-            data     = resp.json()
-            on_state = bool(data.get("output", False))
-            kv       = [{"key": "onOffState", "value": on_state}]
-            mirror   = {"on": str(on_state)}
-
-            # v3.20.0: who switched it. Written only when it changes, so SQL
-            # Logger gets a row per change and not one per poll.
-            prev_on = dev.states.get("onOffState")
-            moved   = self._switch_changed.pop(dev.id, False) or (
-                prev_on is not None and bool(prev_on) != on_state)
-            who = switch_source_label(data.get("source"), data.get("tag"))
-            if who and who != dev.states.get("lastChangedBy"):
-                kv.append({"key": "lastChangedBy", "value": who})
-            if moved and who and who != "Indigo":
-                self._log_activity(f'"{dev.name}" turned {"on" if on_state else "off"} by {who}')
-                self._fire_trigger("switchedOutsideIndigo", dev.id, {"who": who})
-
-            if has_pm:
-                # v3.14: instantaneous readings are written only when PRESENT —
-                # a partial response used to fabricate 0 W / 0 V readings (the
-                # non-energy edition of the v3.6 phantom-zero class).
-                watts   = self._get_total_wh(data, "apower")
-                voltage = self._get_total_wh(data, "voltage")
-                current = self._get_total_wh(data, "current")
-                temp_c  = self._get_total_wh(data.get("temperature") or {}, "tC")
-
-                if watts is not None:
-                    kv.append({"key": "powerWatts", "value": watts,
-                               "uiValue": f"{watts:.1f} W"})
-                    mirror["watts"] = f"{watts:.1f}"
-                if voltage is not None:
-                    kv.append({"key": "voltage", "value": voltage,
-                               "uiValue": f"{voltage:.1f} V"})
-                if current is not None:
-                    kv.append({"key": "currentAmps", "value": current,
-                               "uiValue": f"{current:.3f} A"})
-                if temp_c is not None:
-                    kv.append({"key": "deviceTempC", "value": temp_c,
-                               "uiValue": f"{temp_c:.1f} C"})
-
-                # Energy is cumulative — only update from a REAL reading. A missing
-                # aenergy.total (partial response, mid-reboot) must not fabricate a 0,
-                # which would zero the baseline and corrupt today/month kWh.
-                total_wh = self._get_total_wh(data.get("aenergy") or {}, "total")
-                if total_wh is not None:
-                    today_kwh, month_kwh = self._calc_energy(dev.id, total_wh)
-                    kv += [
-                        {"key": "energyKwhToday",   "value": round(today_kwh, 4),
-                         "uiValue": f"{today_kwh:.3f} kWh"},
-                        {"key": "energyKwhMonth",   "value": round(month_kwh, 4),
-                         "uiValue": f"{month_kwh:.3f} kWh"},
-                    ]
-                    mirror["kwh_today"] = f"{today_kwh:.4f}"
-                else:
-                    self.logger.debug(f'[{dev.name}] no aenergy.total this poll — energy preserved')
-
-                self._check_power_alert(dev, watts)
-
-            if addon_temp:
-                try:
-                    tr = self._rget(f"http://{ip}/rpc/Temperature.GetStatus?id=100")
-                    if tr.status_code == 200:
-                        probe_c = float((tr.json() or {}).get("tC", 0.0))
-                        kv.append({"key": "addonTempC", "value": probe_c,
-                                   "uiValue": f"{probe_c:.1f} C"})
-                except Exception:
-                    pass
-
-            dev.updateStatesOnServer(kv)
-            self._mirror_states(dev, mirror)
-            self._capture_unhandled_fields(dev, data)
-            self._mark_online(dev)
+            data = resp.json()
+            self._apply_relay_status(dev, data, ip=ip if addon_temp else None)
             self.last_polled[dev.id] = time.time()
 
         except requests.exceptions.ConnectionError:
@@ -4096,6 +4381,83 @@ class Plugin(indigo.PluginBase):
         except Exception as exc:
             log(f'[{dev.name}] poll error: {exc}', level="WARNING")
             self._poll_failed(dev, f"poll error: {exc}")
+
+    def _apply_relay_status(self, dev, data, ip=None):
+        """Write one switch component's status into the device -- from a poll
+        or from the live connection (v4.0.0). `ip` is given only when the
+        add-on temperature probe should be read as well."""
+        has_pm   = dev.pluginProps.get("has_pm", True)
+        on_state = bool(data.get("output", False))
+        kv       = [{"key": "onOffState", "value": on_state}]
+        mirror   = {"on": str(on_state)}
+
+        # v3.20.0: who switched it. Written only when it changes, so SQL
+        # Logger gets a row per change and not one per poll.
+        prev_on = dev.states.get("onOffState")
+        moved   = self._switch_changed.pop(dev.id, False) or (
+            prev_on is not None and bool(prev_on) != on_state)
+        who = switch_source_label(data.get("source"), data.get("tag"))
+        if who and who != dev.states.get("lastChangedBy"):
+            kv.append({"key": "lastChangedBy", "value": who})
+        if moved and who and who != "Indigo":
+            self._log_activity(f'"{dev.name}" turned {"on" if on_state else "off"} by {who}')
+            self._fire_trigger("switchedOutsideIndigo", dev.id, {"who": who})
+
+        if has_pm:
+            # v3.14: instantaneous readings are written only when PRESENT —
+            # a partial response used to fabricate 0 W / 0 V readings (the
+            # non-energy edition of the v3.6 phantom-zero class).
+            watts   = self._get_total_wh(data, "apower")
+            voltage = self._get_total_wh(data, "voltage")
+            current = self._get_total_wh(data, "current")
+            temp_c  = self._get_total_wh(data.get("temperature") or {}, "tC")
+
+            if watts is not None:
+                kv.append({"key": "powerWatts", "value": watts,
+                           "uiValue": f"{watts:.1f} W"})
+                mirror["watts"] = f"{watts:.1f}"
+            if voltage is not None:
+                kv.append({"key": "voltage", "value": voltage,
+                           "uiValue": f"{voltage:.1f} V"})
+            if current is not None:
+                kv.append({"key": "currentAmps", "value": current,
+                           "uiValue": f"{current:.3f} A"})
+            if temp_c is not None:
+                kv.append({"key": "deviceTempC", "value": temp_c,
+                           "uiValue": f"{temp_c:.1f} C"})
+
+            # Energy is cumulative — only update from a REAL reading. A missing
+            # aenergy.total (partial response, mid-reboot) must not fabricate a 0,
+            # which would zero the baseline and corrupt today/month kWh.
+            total_wh = self._get_total_wh(data.get("aenergy") or {}, "total")
+            if total_wh is not None:
+                today_kwh, month_kwh = self._calc_energy(dev.id, total_wh)
+                kv += [
+                    {"key": "energyKwhToday",   "value": round(today_kwh, 4),
+                     "uiValue": f"{today_kwh:.3f} kWh"},
+                    {"key": "energyKwhMonth",   "value": round(month_kwh, 4),
+                     "uiValue": f"{month_kwh:.3f} kWh"},
+                ]
+                mirror["kwh_today"] = f"{today_kwh:.4f}"
+            else:
+                self.logger.debug(f'[{dev.name}] no aenergy.total this poll — energy preserved')
+
+            self._check_power_alert(dev, watts)
+
+        if ip:
+            try:
+                tr = self._rget(f"http://{ip}/rpc/Temperature.GetStatus?id=100")
+                if tr.status_code == 200:
+                    probe_c = float((tr.json() or {}).get("tC", 0.0))
+                    kv.append({"key": "addonTempC", "value": probe_c,
+                               "uiValue": f"{probe_c:.1f} C"})
+            except Exception:
+                pass
+
+        dev.updateStatesOnServer(kv)
+        self._mirror_states(dev, mirror)
+        self._capture_unhandled_fields(dev, data)
+        self._mark_online(dev)
 
     # Fields worth keeping out of Shelly.GetStatus. Deliberately NOT everything
     # the box reports: ram_free, fs_free and the *_rev counters change on almost
@@ -5856,6 +6218,9 @@ class Plugin(indigo.PluginBase):
             ("Devices:",           f"{len(devs)} ({online} online)"),
             ("mDNS Browser:",      ("running" if self._zc else "not running")
                                    + f" ({len(self._mdns_map)} Shellys seen)"),
+            ("Live Connections:",  (f"{sum(1 for lk in self._links.values() if lk.live())} of "
+                                    f"{len(self._links)} Shellys" if self._links
+                                    else ("off" if not self.live_connection else "none yet"))),
             ("Auth Enabled:",      "Yes" if self.shelly_user else "No"),
             ("Firmware Notify:",   "Yes" if self.firmware_notify else "No"),
             ("Timestamps in Log:", "ON" if self.timestamp_enabled else "OFF"),

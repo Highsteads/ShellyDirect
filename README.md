@@ -2,7 +2,7 @@
 
 Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo](https://www.indigodomo.com/). No cloud, no MQTT — the plugin talks to each Shelly straight over your LAN, and the Shellys push their state changes back to Indigo over a small built-in webhook listener.
 
-**Version:** 3.20.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 4.0.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 *Developed and tested on Indigo 2025.2 / Python 3.13. Older Indigo releases that meet the minimum API version above should also work — the API floor is what Indigo's plugin loader actually checks.*
 
@@ -32,6 +32,7 @@ Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo
 
 ## Recent changes
 
+- **v4.0.0** — **a live connection to every Shelly.** The plugin now keeps a connection open to each Shelly, and the device tells Indigo about every change the moment it happens: a switch turning on or off, a button press, a change in power. Polling drops to every five minutes as a backstop while the connection is up, and goes back to its normal pace the moment it is not. Power readings that change every second are written at most every 30 seconds, the same pace as before, so SQL Logger gets no more history than it did. Webhooks stay in place as a fallback, and one arriving while the connection is up is ignored, so nothing happens twice. The connection is not used while Shelly authentication is set; those installs keep working exactly as before. A tick box in the plugin settings turns it off.
 - **v3.20.0** — new features.
   - **The electricity price on your plugs' LED rings.** Tick a box on a Plus Plug UK (or Plug S) and its ring shows green at the cheap rate, amber at the standard rate and red at the peak rate, bright while the plug is on and dim while it is off. Point the plugin at a variable holding your rates in Octopus's format and the ring changes on the minute the rate does, or at a variable holding the current price. Untick it and the ring goes back to how it was.
   - **Safety settings held on the plug itself.** Turn off after so many minutes, cut the power above a wattage or current, and what to do after a power cut. The Shelly enforces them, so they keep working when Indigo is down. The plugin puts them back if something else changes them.
@@ -78,7 +79,7 @@ Headline features:
 
 - **Relays, dimmers, RGBW lights, roller covers, energy meters, sensors and Bluetooth buttons** — all as proper Indigo device types with the right on/off, brightness, colour and status behaviour.
 - **Auto-discovery** — scan your subnet and the plugin creates a device for everything it finds, picking the right type from the Shelly's own model name.
-- **Webhook push** — Shellys push state changes to the plugin the instant they happen, so a switch flipped at the wall updates Indigo immediately rather than waiting for the next poll.
+- **Live connection** — the plugin keeps a connection open to every Shelly, so a switch flipped at the wall, a button press or a change in power reaches Indigo the moment it happens. Webhooks remain as a fallback.
 - **Identity by MAC address** — a device is known by its MAC, never by its IP. Before anything is written the plugin checks that the box answering on that address really is that device, and if the address has changed it finds the device again over mDNS and updates the record itself. Nothing is recorded against a device the plugin cannot positively identify.
 - **Energy monitoring** — for power-metering devices, today/month kWh plus a rolling 30-day history and an optional high-power alert.
 - **Digest Auth support** — for Shellys that have a password set.
@@ -131,6 +132,7 @@ Open **Plugins → Shelly Direct → Configure** and fill in:
 | **Shelly Username / Password** | Optional. Only needed if your Shellys have authentication switched on. If set, Digest Auth is used on every request, and all devices must share the same credentials. |
 | **Daily Firmware Update Notifications** | Check all devices once a day for available firmware and report them in the log (and via Pushover if you run the Pushover plugin). |
 | **Show Electricity Price on Plug LED Rings** | Turns the price light on, with a variable for today's and tomorrow's rates (Octopus format), a variable for the current price, and the cheap and peak thresholds in pence. |
+| **Live Connection to Each Shelly** | On by default. Keep a connection open to each Shelly for instant updates; polling slows to every five minutes while it is up. |
 | **Check Webhook Sender** | On by default. Ignore a webhook unless it comes from the Shelly it names. Untick only if a router between Indigo and your Shellys rewrites their addresses. |
 | **Offline Detection Threshold** | Mark a device offline if nothing is heard from it (poll or webhook) within this window. |
 | **Log Level** | How chatty the log is, from Detailed Debugging down to Errors Only. |
@@ -174,6 +176,8 @@ If a Shelly is unreachable when the plugin tries to register its webhooks (for e
 The listener only believes a webhook that comes from the Shelly it names. One arriving from any other address is ignored, reported once, and removed from the device that sent it. If a router between Indigo and your Shellys rewrites their addresses (NAT), untick **Check Webhook Sender** in the plugin settings.
 
 **HTTPS.** A Shelly that left the factory on firmware 2.0 or later only accepts HTTPS. The plugin notices the first time a device asks for it and uses HTTPS for that device from then on. Shelly signs these certificates itself, so the plugin does not check them, which is no weaker than the plain HTTP every other Shelly uses on your LAN.
+
+**Live connection (v4.0.0).** The plugin keeps a websocket open to each Shelly and subscribes to its changes, so everything the device does arrives straight away. While it is up, polling slows to every five minutes, and a webhook that arrives is ignored because the connection has already delivered it. If the connection drops, polling returns to its normal pace and webhooks take over until it is back. Shellys with authentication switched on are polled instead.
 
 **Polling (pull).** Alongside the push model, every non-battery device is polled on its configured interval as a backstop, so state stays correct even if a webhook is missed. If a device fails to answer three polls in a row it is marked offline and the Device Went Offline trigger fires (unless you have suppressed alerts for it).
 

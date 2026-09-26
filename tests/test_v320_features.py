@@ -116,6 +116,8 @@ def _relay_host(plugin_mod, payload):
     )
     host._log_activity = plugin_mod.Plugin._log_activity.__get__(host)
     host._fire_trigger = lambda t, d, p=None: host.fired.append((t, d, p))
+    host._apply_relay_status = plugin_mod.Plugin._apply_relay_status.__get__(host)
+    host._poll_failed = lambda d, r="": (_ for _ in ()).throw(AssertionError(r))
     return host
 
 

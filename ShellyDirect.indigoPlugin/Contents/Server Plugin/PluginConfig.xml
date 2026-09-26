@@ -58,6 +58,13 @@ Read from IndigoSecrets.SHELLY_USERNAME / SHELLY_PASSWORD first; these fields ar
 		<Label>TCP port the plugin listens on for device webhooks. Change only if another service already uses 8178, then reload the plugin (existing webhooks are re-pointed automatically).</Label>
 	</Field>
 
+	<Field id="live_connection" type="checkbox" defaultValue="true">
+		<Label>Live Connection to Each Shelly:</Label>
+	</Field>
+	<Field id="hlpLive" type="label" fontSize="mini" alignWithControl="true">
+		<Label>Keeps a connection open to every Shelly so each change and button press arrives the moment it happens, and polling drops to every five minutes as a backstop. Not used while Shelly authentication is set. Untick to go back to polling and webhooks only.</Label>
+	</Field>
+
 	<Field id="webhook_source_check" type="checkbox" defaultValue="true">
 		<Label>Check Webhook Sender:</Label>
 	</Field>
