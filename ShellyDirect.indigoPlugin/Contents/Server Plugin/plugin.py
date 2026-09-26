@@ -3,9 +3,20 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.0.0)
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.1.0)
 # Date:        26-09-2026
-# Version:     4.0.0
+# Version:     4.1.0
+#
+# v4.1.0 (26-09-2026): menu items Show Electricity Price on All Plugs / Stop
+# Showing Electricity Price on Plugs -- set the price_light prop on every plug
+# with an LED ring, instead of opening a dialog per plug. A plug that cannot be
+# asked (off at the wall) is ticked, not written off as ringless.
+# FIXED while setting it up live: (1) JSON in a query argument now goes
+# through qjson() -- requests turns spaces into '+', which Shelly refuses, so
+# PLUGUK_UI.SetConfig failed on all 17 plugs, and RGB.Set, RGBW.Set,
+# Switch.SetConfig and BTHome.GetObjectInfos carried the same fault;
+# (2) the price-source menus' '- none -' is the value 'none' -- Indigo drops
+# an empty-valued option, so the menu opened on the first variable.
 #
 # v4.0.0 (26-09-2026): LIVE CONNECTION. One websocket per Shelly box
 # (ShellyLink, websockets.sync.client). Shelly.GetStatus with a `src`
@@ -543,6 +554,18 @@ def _lvl(level):
     return _LOG_LEVELS.get(str(level).upper(), logging.INFO)
 
 
+def qjson(value):
+    """JSON for a Shelly RPC query-string argument: compact, no spaces.
+
+    requests encodes a space in a query value as "+", and Shelly's parser
+    does not turn it back, so json.dumps' default ", " separator made every
+    such argument "Missing or bad argument" (found 26-09-2026 when the price
+    light's PLUGUK_UI.SetConfig was refused by all 17 plugs; RGB.Set and
+    Switch.SetConfig carried the same fault).
+    """
+    return json.dumps(value, separators=(",", ":"))
+
+
 def _days_between(from_str, to_str):
     """Whole days between two YYYY-MM-DD strings, or None if either is unusable.
 
@@ -974,6 +997,7 @@ PRICE_COLOURS = {                       # Shelly LED colours are 0-100 per chann
     "peak":     [100, 0, 0],            # red
 }
 LED_UI_COMPONENTS = ("pluguk_ui", "plugs_ui")
+PRICE_NONE = "none"                     # the "- none -" choice in the source menus
 
 
 def parse_rate_spans(text):
@@ -2023,12 +2047,12 @@ class Plugin(indigo.PluginBase):
             chan = self._pref_int(dev.pluginProps, "channel_id", 0)
             if prof == "rgbw":
                 params = {"id": chan, "on": "true",
-                          "rgb": json.dumps([r, g, b]), "white": w,
+                          "rgb": qjson([r, g, b]), "white": w,
                           "brightness": br}
                 resp = self._rcommand(f"http://{ip}/rpc/RGBW.Set", params=params)
             elif prof == "rgb":
                 params = {"id": chan, "on": "true",
-                          "rgb": json.dumps([r, g, b]), "brightness": br}
+                          "rgb": qjson([r, g, b]), "brightness": br}
                 resp = self._rcommand(f"http://{ip}/rpc/RGB.Set", params=params)
             else:
                 log(f'[{dev.name}] Set Color skipped — device is in "light" '
@@ -2983,7 +3007,7 @@ class Plugin(indigo.PluginBase):
                             "cid":    bthome_id,
                             "enable": "true",
                             "event":  event_key,
-                            "urls":   json.dumps([blu_url]),
+                            "urls":   qjson([blu_url]),
                         },
                     )
                     self.logger.debug(
@@ -3043,7 +3067,7 @@ class Plugin(indigo.PluginBase):
                     cresp = self._rget(
                         f"http://{ip}/rpc/Webhook.Create",
                         params={"cid": cid, "enable": "true",
-                                "event": event, "urls": json.dumps([url])}
+                                "event": event, "urls": qjson([url])}
                     )
                     # v3.14: a failed create used to be invisible. v3.19.0: an
                     # input hook is only asked for where the device reported
@@ -3139,7 +3163,7 @@ class Plugin(indigo.PluginBase):
             resp = self._rget(
                 f"http://{ip}/rpc/Webhook.Create",
                 params={"cid": 0, "enable": "true",
-                        "event": event, "urls": json.dumps([url_template])}
+                        "event": event, "urls": qjson([url_template])}
             )
             resp.raise_for_status()
             log(f'[{dev.name}] Sensor webhook configured for {event}')
@@ -3727,9 +3751,11 @@ class Plugin(indigo.PluginBase):
             except (TypeError, ValueError):
                 return float(default)
         self.price_light_enabled = as_bool(prefs.get("price_light_enabled"), False)
-        self.price_rates_vars    = [str(prefs.get(k, "") or "").strip()
-                                    for k in ("price_rates_var", "price_rates_var2")]
-        self.price_now_var       = str(prefs.get("price_now_var", "") or "").strip()
+        def _ref(key):
+            ref = str(prefs.get(key, "") or "").strip()
+            return "" if ref == PRICE_NONE else ref
+        self.price_rates_vars    = [_ref("price_rates_var"), _ref("price_rates_var2")]
+        self.price_now_var       = _ref("price_now_var")
         self.price_cheap_below   = _num("price_cheap_below", 20)
         self.price_peak_above    = _num("price_peak_above", 30)
 
@@ -3792,7 +3818,7 @@ class Plugin(indigo.PluginBase):
 
     def _led_set(self, ip, comp, leds):
         return self._rcommand(f"http://{ip}/rpc/{comp.upper()}.SetConfig",
-                              params={"config": json.dumps({"leds": leds})})
+                              params={"config": qjson({"leds": leds})})
 
     def _show_price_band(self, dev, band):
         comp = self._led_component(dev)
@@ -3839,6 +3865,56 @@ class Plugin(indigo.PluginBase):
         except Exception as exc:
             self.logger.debug(f"[{dev.name}] LED ring not restored: {exc}")
 
+    def menuPriceLightAllOn(self, values_dict=None, type_id=""):
+        threading.Thread(target=self._set_price_light_all, args=(True,), daemon=True).start()
+        return True
+
+    def menuPriceLightAllOff(self, values_dict=None, type_id=""):
+        threading.Thread(target=self._set_price_light_all, args=(False,), daemon=True).start()
+        return True
+
+    def _set_price_light_all(self, on):
+        """Tick (or untick) Show Electricity Price on every plug that has an
+        LED ring (v4.1.0) -- one menu item instead of a dialog per plug."""
+        changed, no_ring, unasked = [], [], []
+        for dev in sorted(indigo.devices.iter("self"), key=lambda d: d.name):
+            if dev.deviceTypeId != "shellyRelay" or not dev.enabled:
+                continue
+            if as_bool(dev.pluginProps.get("price_light"), False) == on:
+                continue
+            if on:
+                ip = dev.pluginProps.get("ip_address", "").strip()
+                comps = self._device_components(ip) if ip else None
+                if comps is None:
+                    # Switched off or away: tick it, and the ring is coloured
+                    # when it comes back if it turns out to have one.
+                    unasked.append(dev.name)
+                elif not any(c in comps for c in LED_UI_COMPONENTS):
+                    no_ring.append(dev.name)
+                    continue
+            with self._props_lock:
+                props = dict(dev.pluginProps)
+                props["price_light"] = on
+                dev.replacePluginPropsOnServer(props)
+            changed.append(dev.name)
+        if on:
+            msg = (f"The LED ring now shows the electricity price on "
+                   f"{count_words(len(changed), 'plug')}" + (f": {join_names(changed)}." if changed else "."))
+            if no_ring:
+                msg += f" {join_names(no_ring)} {'has' if len(no_ring) == 1 else 'have'} no LED ring."
+            if unasked:
+                msg += (f" {join_names(unasked)} could not be reached, so "
+                        f"{'it shows' if len(unasked) == 1 else 'they show'} the price "
+                        f"when back if {'it has' if len(unasked) == 1 else 'they have'} a ring.")
+            if not self.price_light_enabled:
+                msg += (" The price light is switched off in the plugin settings, so nothing "
+                        "changes until it is ticked there with a price source.")
+        else:
+            msg = (f"The LED ring is back to normal on {count_words(len(changed), 'plug')}"
+                   + (f": {join_names(changed)}." if changed else "."))
+        log(msg)
+        self._price_checked = 0.0          # bring the rings up to date on the next tick
+
     # ---------------------------------------------------------------------------
     # Switch settings held on the device (v3.20.0)
     # ---------------------------------------------------------------------------
@@ -3860,7 +3936,7 @@ class Plugin(indigo.PluginBase):
             if not changes:
                 return {}
             resp = self._rget(f"http://{ip}/rpc/Switch.SetConfig",
-                              params={"id": chan, "config": json.dumps(changes)})
+                              params={"id": chan, "config": qjson(changes)})
             resp.raise_for_status()
             if "code" in (resp.json() or {}):
                 raise RuntimeError((resp.json() or {}).get("message", "refused"))
@@ -4031,7 +4107,7 @@ class Plugin(indigo.PluginBase):
         if missing:
             try:
                 resp = self._rget(f"http://{ip}/rpc/BTHome.GetObjectInfos",
-                                  params={"obj_ids": json.dumps(missing)})
+                                  params={"obj_ids": qjson(missing)})
                 for obj in (resp.json() or {}).get("objects", []) or []:
                     known[int(obj.get("obj_id"))] = str(obj.get("obj_name", ""))
                     kinds[int(obj.get("obj_id"))] = str(obj.get("type", ""))
@@ -5804,7 +5880,10 @@ class Plugin(indigo.PluginBase):
 
     def getVariableChoices(self, filter="", valuesDict=None, typeId="", targetId=0):
         """Every Indigo variable, for the price source menus."""
-        result = [("", "- none -")]
+        # "none", not "": Indigo drops a menu option whose value is empty, so
+        # the menu opened on the FIRST variable in the list and saving the
+        # dialog stored it as the price source (found setting it up, 26-09-2026).
+        result = [(PRICE_NONE, "- none -")]
         for var in sorted(indigo.variables, key=lambda v: v.name.lower()):
             result.append((str(var.id), var.name))
         return result

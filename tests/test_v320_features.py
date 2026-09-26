@@ -499,3 +499,77 @@ def test_discovery_never_mistakes_a_sensor_for_its_gateway(plugin_mod, monkeypat
     host = types.SimpleNamespace()
     assert plugin_mod.Plugin._existing_device_macs(host) == {}
     assert plugin_mod.Plugin._existing_device_ips(host) == set()
+
+
+# ── v4.1.0: price light on every plug at once ────────────────────────────────
+
+def test_the_menu_ticks_every_plug_with_a_ring_and_says_so(plugin_mod, monkeypatch):
+    logged = _Log()
+    monkeypatch.setattr(plugin_mod, "log", logged)
+    lamp = FakeDev(1, "Lamp")
+    tv = FakeDev(2, "TV")
+    garage = FakeDev(3, "Garage")
+    already = FakeDev(4, "Kettle", props={"price_light": True})
+    monkeypatch.setattr(plugin_mod.indigo.devices, "iter",
+                        lambda *a, **k: [lamp, tv, garage, already], raising=False)
+    host = types.SimpleNamespace(price_light_enabled=True, _price_checked=99.0,
+                                 _props_lock=threading.RLock(),
+                                 _device_components=lambda ip: {"switch:0"} if ip == "192.168.1.26"
+                                 else {"switch:0", "pluguk_ui"})
+    garage.pluginProps["ip_address"] = "192.168.1.26"
+    plugin_mod.Plugin._set_price_light_all(host, True)
+    assert lamp.pluginProps["price_light"] is True and tv.pluginProps["price_light"] is True
+    assert "price_light" not in garage.pluginProps
+    assert logged.lines == [("INFO", "The LED ring now shows the electricity price on two "
+                                     "plugs: Lamp and TV. Garage has no LED ring.")]
+    _plain_english(logged.lines[0][1])
+    assert host._price_checked == 0.0
+
+
+def test_a_plug_that_cannot_be_asked_is_ticked_not_written_off(plugin_mod, monkeypatch):
+    logged = _Log()
+    monkeypatch.setattr(plugin_mod, "log", logged)
+    washer = FakeDev(5, "Washer")
+    monkeypatch.setattr(plugin_mod.indigo.devices, "iter", lambda *a, **k: [washer], raising=False)
+    host = types.SimpleNamespace(price_light_enabled=True, _price_checked=99.0,
+                                 _props_lock=threading.RLock(), _device_components=lambda ip: None)
+    plugin_mod.Plugin._set_price_light_all(host, True)
+    assert washer.pluginProps["price_light"] is True
+    assert "Washer could not be reached, so it shows the price when back if it has a ring." in logged.lines[0][1]
+
+
+def test_none_in_the_source_menus_means_no_source(plugin_mod):
+    """Indigo drops an empty-valued menu option, so "- none -" is the value
+    "none" and must read as no source at all."""
+    host = types.SimpleNamespace()
+    plugin_mod.Plugin._load_price_prefs(host, {"price_light_enabled": True,
+                                               "price_rates_var": "none",
+                                               "price_rates_var2": "778257677",
+                                               "price_now_var": "none"})
+    assert host.price_rates_vars == ["", "778257677"] and host.price_now_var == ""
+    menu = plugin_mod.Plugin.getVariableChoices(types.SimpleNamespace())
+    assert menu[0] == ("none", "- none -")
+
+
+def test_query_json_has_no_spaces(plugin_mod):
+    """A space reaches Shelly as "+" and the argument is refused."""
+    assert plugin_mod.qjson({"leds": {"mode": "switch", "rgb": [100, 55, 0]}}) == \
+        '{"leds":{"mode":"switch","rgb":[100,55,0]}}'
+
+
+def test_no_query_argument_is_built_with_plain_json_dumps():
+    """Every json.dumps left in plugin.py must be outside a query string: the
+    websocket frame, the saved LED settings and the energy file."""
+    import ast
+    import io
+    from pathlib import Path
+    src = Path(__file__).resolve().parent.parent / "ShellyDirect.indigoPlugin" / "Contents" / "Server Plugin" / "plugin.py"
+    tree = ast.parse(io.open(src, encoding="utf-8").read())
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            for val in node.values:
+                if (isinstance(val, ast.Call) and isinstance(val.func, ast.Attribute)
+                        and val.func.attr == "dumps"):
+                    offenders.append(val.lineno)
+    assert offenders == [], f"json.dumps inside a params dict at lines {offenders}"

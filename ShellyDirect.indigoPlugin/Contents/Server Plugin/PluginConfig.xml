@@ -107,12 +107,12 @@ Read from IndigoSecrets.SHELLY_USERNAME / SHELLY_PASSWORD first; these fields ar
 	<Field id="hlpPriceLight" type="label" fontSize="mini" alignWithControl="true">
 		<Label>Plugs with "Show Electricity Price on LED Ring" ticked show green at the cheap rate, amber at the standard rate and red at the peak rate.</Label>
 	</Field>
-	<Field id="price_rates_var" type="menu" defaultValue=""
+	<Field id="price_rates_var" type="menu" defaultValue="none"
 	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
 		<Label>Today's Rates (variable):</Label>
 		<List class="self" filter="" method="getVariableChoices" dynamicReload="true"/>
 	</Field>
-	<Field id="price_rates_var2" type="menu" defaultValue=""
+	<Field id="price_rates_var2" type="menu" defaultValue="none"
 	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
 		<Label>Tomorrow's Rates (variable):</Label>
 		<List class="self" filter="" method="getVariableChoices" dynamicReload="true"/>
@@ -121,7 +121,7 @@ Read from IndigoSecrets.SHELLY_USERNAME / SHELLY_PASSWORD first; these fields ar
 	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
 		<Label>Optional. A variable holding the day's rates as Octopus publishes them (a JSON list with valid_from, valid_to and value_inc_vat). With these the ring changes on the minute the rate does.</Label>
 	</Field>
-	<Field id="price_now_var" type="menu" defaultValue=""
+	<Field id="price_now_var" type="menu" defaultValue="none"
 	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
 		<Label>Current Price (variable):</Label>
 		<List class="self" filter="" method="getVariableChoices" dynamicReload="true"/>

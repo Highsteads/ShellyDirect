@@ -31,6 +31,16 @@
 		<CallbackMethod>menuListBluDevices</CallbackMethod>
 	</MenuItem>
 
+	<MenuItem id="menuPriceLightAllOn">
+		<Name>Show Electricity Price on All Plugs</Name>
+		<CallbackMethod>menuPriceLightAllOn</CallbackMethod>
+	</MenuItem>
+
+	<MenuItem id="menuPriceLightAllOff">
+		<Name>Stop Showing Electricity Price on Plugs</Name>
+		<CallbackMethod>menuPriceLightAllOff</CallbackMethod>
+	</MenuItem>
+
 	<MenuItem id="menuResetWebhooks">
 		<Name>Reconfigure Webhooks (All Devices)</Name>
 		<CallbackMethod>menuResetWebhooks</CallbackMethod>
