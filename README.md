@@ -2,7 +2,7 @@
 
 Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo](https://www.indigodomo.com/). No cloud, no MQTT — the plugin talks to each Shelly straight over your LAN, and the Shellys push their state changes back to Indigo over a small built-in webhook listener.
 
-**Version:** 4.1.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 4.2.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 *Developed and tested on Indigo 2025.2 / Python 3.13. Older Indigo releases that meet the minimum API version above should also work — the API floor is what Indigo's plugin loader actually checks.*
 
@@ -32,6 +32,7 @@ Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo
 
 ## Recent changes
 
+- **v4.2.0** — a **Set Firmware Hold** action ticks or unticks Hold Firmware on a device, so it can be changed from a schedule or a script as well as the device dialog.
 - **v4.1.0** — two menu items, **Show Electricity Price on All Plugs** and **Stop Showing Electricity Price on Plugs**, set the price light on every plug with an LED ring at once instead of one dialog per plug. Two fixes found while setting it up: the LED, colour and switch-settings commands were refused by the device because of how their settings were written into the request, so none of them had ever worked; and "- none -" in the price-source menus now really means none, where it used to fall back to the first variable in the list.
 - **v4.0.0** — **a live connection to every Shelly.** The plugin now keeps a connection open to each Shelly, and the device tells Indigo about every change the moment it happens: a switch turning on or off, a button press, a change in power. Polling drops to every five minutes as a backstop while the connection is up, and goes back to its normal pace the moment it is not. Power readings that change every second are written at most every 30 seconds, the same pace as before, so SQL Logger gets no more history than it did. Webhooks stay in place as a fallback, and one arriving while the connection is up is ignored, so nothing happens twice. The connection is not used while Shelly authentication is set; those installs keep working exactly as before. A tick box in the plugin settings turns it off.
 - **v3.20.0** — new features.
@@ -199,6 +200,7 @@ As well as the standard Indigo On / Off / Toggle / Set Brightness / Set Color ac
 | **Set Brightness** | dimmer | Set brightness 0-100. |
 | **Set RGBW Color** | RGBW | Set red, green, blue, white (0-255 each) and brightness (0-100). |
 | **Set Light Effect** | RGBW | Not available on Gen 2 and later firmware, which has no equivalent; the action logs a warning and does nothing. Kept so existing actions do not break. |
+| **Set Firmware Hold** | any device | Tick or untick Hold Firmware, so Update Firmware leaves the device alone (or not). |
 | **Update Firmware** | any mains device | Install the stable firmware update, wait for the device to come back, and switch a relay back if the restart changed it. Skips devices marked Hold Firmware. |
 
 ---

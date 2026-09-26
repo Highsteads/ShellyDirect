@@ -3,9 +3,12 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.1.0)
-# Date:        26-09-2026
-# Version:     4.1.0
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.2.0)
+# Date:        27-09-2026
+# Version:     4.2.0
+#
+# v4.2.0 (27-09-2026): Set Firmware Hold action -- ticks or unticks Hold
+# Firmware on a device from a script, schedule or another plugin.
 #
 # v4.1.0 (26-09-2026): menu items Show Electricity Price on All Plugs / Stop
 # Showing Electricity Price on Plugs -- set the price_light prop on every plug
@@ -4042,6 +4045,21 @@ class Plugin(indigo.PluginBase):
             finally:
                 self._firmware_busy.release()
         threading.Thread(target=_run, daemon=True).start()
+
+    def actionSetFirmwareHold(self, action):
+        """Tick or untick Hold Firmware on a device (v4.2.0), so it can be set
+        from a script or schedule as well as the device dialog."""
+        try:
+            dev = indigo.devices[action.deviceId]
+        except KeyError:
+            return
+        hold = as_bool(action.props.get("hold"), True)
+        if as_bool(dev.pluginProps.get("hold_firmware"), False) != hold:
+            with self._props_lock:
+                props = dict(dev.pluginProps)
+                props["hold_firmware"] = hold
+                dev.replacePluginPropsOnServer(props)
+        log(f"[{dev.name}] firmware is {'held: Update Firmware will leave it alone' if hold else 'no longer held'}")
 
     def menuUpdateFirmwareAll(self, values_dict=None, type_id=""):
         def _run():

@@ -573,3 +573,17 @@ def test_no_query_argument_is_built_with_plain_json_dumps():
                         and val.func.attr == "dumps"):
                     offenders.append(val.lineno)
     assert offenders == [], f"json.dumps inside a params dict at lines {offenders}"
+
+
+def test_the_hold_firmware_action_sets_and_clears_the_tick(plugin_mod, monkeypatch):
+    logged = _Log()
+    monkeypatch.setattr(plugin_mod, "log", logged)
+    dev = FakeDev(1, "Indigo Mac Mini Plug")
+    monkeypatch.setattr(plugin_mod.indigo.devices, "__getitem__", lambda self, i: dev, raising=False)
+    monkeypatch.setattr(type(plugin_mod.indigo.devices), "__getitem__", lambda self, i: dev)
+    host = types.SimpleNamespace(_props_lock=threading.RLock())
+    plugin_mod.Plugin.actionSetFirmwareHold(host, types.SimpleNamespace(deviceId=1, props={"hold": True}))
+    assert dev.pluginProps["hold_firmware"] is True
+    plugin_mod.Plugin.actionSetFirmwareHold(host, types.SimpleNamespace(deviceId=1, props={"hold": False}))
+    assert dev.pluginProps["hold_firmware"] is False
+    assert logged.lines[0][1] == "[Indigo Mac Mini Plug] firmware is held: Update Firmware will leave it alone"

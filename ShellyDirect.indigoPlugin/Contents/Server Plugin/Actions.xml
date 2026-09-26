@@ -112,4 +112,17 @@
 		<CallbackMethod>actionUpdateFirmware</CallbackMethod>
 	</Action>
 
+	<Action id="actionSetFirmwareHold" deviceFilter="self" uiPath="Advanced">
+		<Name>Set Firmware Hold</Name>
+		<CallbackMethod>actionSetFirmwareHold</CallbackMethod>
+		<ConfigUI>
+			<Field id="hold" type="checkbox" defaultValue="true">
+				<Label>Hold Firmware:</Label>
+			</Field>
+			<Field id="hlp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Ticked: Update Firmware leaves this device alone. Unticked: it can be updated again.</Label>
+			</Field>
+		</ConfigUI>
+	</Action>
+
 </Actions>
