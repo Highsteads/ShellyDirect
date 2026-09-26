@@ -99,6 +99,58 @@
 			<Field id="hlpSuppress" type="label" fontSize="mini" alignWithControl="true">
 				<Label>Do not log warnings or fire offline triggers when this device goes offline. Useful for appliance monitors that are intentionally unpowered when not in use.</Label>
 			</Field>
+			<Field id="sepWho" type="separator"/>
+			<Field id="price_light" type="checkbox" defaultValue="false">
+				<Label>Show Electricity Price on LED Ring:</Label>
+			</Field>
+			<Field id="hlpPrice" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Plugs with an LED ring only (Plus Plug UK, Plug S). The ring shows green at the cheap rate, amber at the standard rate and red at the peak rate - bright while the plug is on, dim while it is off. Set the price source in the plugin's Configure dialog. Untick to put the ring back as it was.</Label>
+			</Field>
+			<Field id="sepSafety" type="separator"/>
+			<Field id="manage_switch_settings" type="checkbox" defaultValue="false">
+				<Label>Manage Switch Settings from Indigo:</Label>
+			</Field>
+			<Field id="hlpManage" type="label" fontSize="mini" alignWithControl="true">
+				<Label>The Shelly holds these settings itself, so they keep working when Indigo, the plugin or the network is down. Only what you set here is changed; the plugin checks them every six hours and puts them back if something else changed them.</Label>
+			</Field>
+			<Field id="auto_off_minutes" type="textfield" defaultValue=""
+			       visibleBindingId="manage_switch_settings" visibleBindingValue="true">
+				<Label>Turn Off After (minutes):</Label>
+			</Field>
+			<Field id="hlpAutoOff" type="label" fontSize="mini" alignWithControl="true"
+			       visibleBindingId="manage_switch_settings" visibleBindingValue="true">
+				<Label>The switch turns itself off this long after being turned on, however it was turned on. Blank or 0 for never.</Label>
+			</Field>
+			<Field id="power_limit_w" type="textfield" defaultValue=""
+			       visibleBindingId="manage_switch_settings" visibleBindingValue="true">
+				<Label>Cut Power Above (W):</Label>
+			</Field>
+			<Field id="current_limit_a" type="textfield" defaultValue=""
+			       visibleBindingId="manage_switch_settings" visibleBindingValue="true">
+				<Label>Cut Power Above (A):</Label>
+			</Field>
+			<Field id="hlpLimits" type="label" fontSize="mini" alignWithControl="true"
+			       visibleBindingId="manage_switch_settings" visibleBindingValue="true">
+				<Label>Blank leaves the device's own limit alone. A Plus Plug UK allows up to 3000 W and 13 A.</Label>
+			</Field>
+			<Field id="initial_state" type="menu" defaultValue=""
+			       visibleBindingId="manage_switch_settings" visibleBindingValue="true">
+				<Label>After a Power Cut:</Label>
+				<List>
+					<Option value="">Leave as set on the device</Option>
+					<Option value="off">Stay off</Option>
+					<Option value="on">Come on</Option>
+					<Option value="restore_last">Go back to how it was</Option>
+					<Option value="match_input">Follow its switch</Option>
+				</List>
+			</Field>
+			<Field id="sepFw" type="separator"/>
+			<Field id="hold_firmware" type="checkbox" defaultValue="false">
+				<Label>Hold Firmware:</Label>
+			</Field>
+			<Field id="hlpHoldFw" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Never update this device's firmware from Indigo (the Update Firmware action and menu skip it).</Label>
+			</Field>
 		</ConfigUI>
 		<States>
 			<State id="powerWatts">
@@ -136,6 +188,11 @@
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Add-on Probe Temperature (C)</TriggerLabel>
 				<ControlPageLabel>Probe Temp</ControlPageLabel>
+			</State>
+			<State id="lastChangedBy">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Last Switched By</TriggerLabel>
+				<ControlPageLabel>Switched By</ControlPageLabel>
 			</State>
 			<State id="deviceOnline">
 				<ValueType>Boolean</ValueType>
@@ -187,6 +244,13 @@
 			</Field>
 			<Field id="detail_note" type="label" fontSize="small">
 				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
+			</Field>
+			<Field id="sepFw" type="separator"/>
+			<Field id="hold_firmware" type="checkbox" defaultValue="false">
+				<Label>Hold Firmware:</Label>
+			</Field>
+			<Field id="hlpHoldFw" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Never update this device's firmware from Indigo (the Update Firmware action and menu skip it).</Label>
 			</Field>
 		</ConfigUI>
 		<States>
@@ -262,6 +326,13 @@
 			</Field>
 			<Field id="detail_note" type="label" fontSize="small">
 				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
+			</Field>
+			<Field id="sepFw" type="separator"/>
+			<Field id="hold_firmware" type="checkbox" defaultValue="false">
+				<Label>Hold Firmware:</Label>
+			</Field>
+			<Field id="hlpHoldFw" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Never update this device's firmware from Indigo (the Update Firmware action and menu skip it).</Label>
 			</Field>
 		</ConfigUI>
 		<States>
@@ -356,6 +427,13 @@
 			</Field>
 			<Field id="detail_note" type="label" fontSize="small">
 				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
+			</Field>
+			<Field id="sepFw" type="separator"/>
+			<Field id="hold_firmware" type="checkbox" defaultValue="false">
+				<Label>Hold Firmware:</Label>
+			</Field>
+			<Field id="hlpHoldFw" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Never update this device's firmware from Indigo (the Update Firmware action and menu skip it).</Label>
 			</Field>
 		</ConfigUI>
 		<States>
@@ -461,6 +539,13 @@
 			</Field>
 			<Field id="detail_note" type="label" fontSize="small">
 				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
+			</Field>
+			<Field id="sepFw" type="separator"/>
+			<Field id="hold_firmware" type="checkbox" defaultValue="false">
+				<Label>Hold Firmware:</Label>
+			</Field>
+			<Field id="hlpHoldFw" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Never update this device's firmware from Indigo (the Update Firmware action and menu skip it).</Label>
 			</Field>
 		</ConfigUI>
 		<States>
@@ -602,6 +687,13 @@
 			</Field>
 			<Field id="detail_note" type="label" fontSize="small">
 				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
+			</Field>
+			<Field id="sepFw" type="separator"/>
+			<Field id="hold_firmware" type="checkbox" defaultValue="false">
+				<Label>Hold Firmware:</Label>
+			</Field>
+			<Field id="hlpHoldFw" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Never update this device's firmware from Indigo (the Update Firmware action and menu skip it).</Label>
 			</Field>
 		</ConfigUI>
 		<States>
@@ -817,6 +909,13 @@
 			<Field id="detail_note" type="label" fontSize="small">
 				<Label>Reads the device's own wifi signal, the AP it is associated with, its uptime and its cloud/MQTT links. Separate from the poll above because none of it changes second by second.</Label>
 			</Field>
+			<Field id="sepFw" type="separator"/>
+			<Field id="hold_firmware" type="checkbox" defaultValue="false">
+				<Label>Hold Firmware:</Label>
+			</Field>
+			<Field id="hlpHoldFw" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Never update this device's firmware from Indigo (the Update Firmware action and menu skip it).</Label>
+			</Field>
 		</ConfigUI>
 		<States>
 			<!-- brightnessLevel is a NATIVE dimmer state — the explicit
@@ -851,6 +950,99 @@
 				<ValueType>Float</ValueType>
 				<TriggerLabel>Power (W)</TriggerLabel>
 				<ControlPageLabel>Power</ControlPageLabel>
+			</State>
+			<State id="deviceOnline">
+				<ValueType>Boolean</ValueType>
+				<TriggerLabel>Device Online</TriggerLabel>
+				<ControlPageLabel>Online</ControlPageLabel>
+			</State>
+		</States>
+	</Device>
+
+
+	<!-- ============================================================
+	     shellyBluSensor  -  a Shelly BLU sensor (H&T, Door/Window, Motion,
+	     Distance ...) read through a Gen 3 / Gen 4 / Pro gateway's own BTHome
+	     component - no scripts. Readings are named by the gateway itself.
+	     ============================================================ -->
+	<Device type="sensor" id="shellyBluSensor">
+		<Name>Shelly BLU Sensor (via BTHome gateway)</Name>
+		<ConfigUI>
+			<Field id="SupportsOnState" type="checkbox" defaultValue="false" hidden="true"/>
+			<Field id="SupportsSensorValue" type="checkbox" defaultValue="true" hidden="true"/>
+			<Field id="ip_address" type="textfield" defaultValue="">
+				<Label>Gateway IP Address:</Label>
+			</Field>
+			<Field id="hlpIp" type="label" fontSize="mini" alignWithControl="true">
+				<Label>The Gen 3, Gen 4 or Pro Shelly the sensor is paired with (its Bluetooth components). BLU sensors have no address of their own.</Label>
+			</Field>
+			<Field id="sep1" type="separator"/>
+			<Field id="bthome_id" type="textfield" defaultValue="200">
+				<Label>BTHome Device ID:</Label>
+			</Field>
+			<Field id="hlpBth" type="label" fontSize="mini" alignWithControl="true">
+				<Label>The number of the bthomedevice component on the gateway (e.g. 200). Plugins -> Shelly Direct -> Show BLU Devices on Gateways lists them.</Label>
+			</Field>
+			<Field id="sep2" type="separator"/>
+			<Field id="display_kind" type="menu" defaultValue="value">
+				<Label>Show in Device List:</Label>
+				<List>
+					<Option value="value">A reading (temperature, distance, light)</Option>
+					<Option value="onoff">Open/closed or motion</Option>
+				</List>
+			</Field>
+			<Field id="poll_interval" type="menu" defaultValue="60">
+				<Label>Check Every:</Label>
+				<List>
+					<Option value="30">30 seconds</Option>
+					<Option value="60">Minute (default)</Option>
+					<Option value="300">5 minutes</Option>
+				</List>
+			</Field>
+			<Field id="hlpPoll" type="label" fontSize="mini" alignWithControl="true">
+				<Label>A change also arrives straight away through a webhook on the gateway; the check is the backstop.</Label>
+			</Field>
+		</ConfigUI>
+		<States>
+			<State id="temperature">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Temperature (C)</TriggerLabel>
+				<ControlPageLabel>Temperature</ControlPageLabel>
+			</State>
+			<State id="humidity">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Humidity (%)</TriggerLabel>
+				<ControlPageLabel>Humidity</ControlPageLabel>
+			</State>
+			<State id="illuminance">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Light (lux)</TriggerLabel>
+				<ControlPageLabel>Light</ControlPageLabel>
+			</State>
+			<State id="distance">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Distance (mm)</TriggerLabel>
+				<ControlPageLabel>Distance</ControlPageLabel>
+			</State>
+			<State id="rotation">
+				<ValueType>Float</ValueType>
+				<TriggerLabel>Rotation (degrees)</TriggerLabel>
+				<ControlPageLabel>Rotation</ControlPageLabel>
+			</State>
+			<State id="battery">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Battery (%)</TriggerLabel>
+				<ControlPageLabel>Battery</ControlPageLabel>
+			</State>
+			<State id="rssi">
+				<ValueType>Integer</ValueType>
+				<TriggerLabel>Signal (dBm)</TriggerLabel>
+				<ControlPageLabel>Signal</ControlPageLabel>
+			</State>
+			<State id="lastReport">
+				<ValueType>String</ValueType>
+				<TriggerLabel>Last Report</TriggerLabel>
+				<ControlPageLabel>Last Report</ControlPageLabel>
 			</State>
 			<State id="deviceOnline">
 				<ValueType>Boolean</ValueType>

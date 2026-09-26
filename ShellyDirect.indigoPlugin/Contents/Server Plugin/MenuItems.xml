@@ -21,6 +21,16 @@
 		<CallbackMethod>menuCheckFirmware</CallbackMethod>
 	</MenuItem>
 
+	<MenuItem id="menuUpdateFirmwareAll">
+		<Name>Update Firmware on All Devices</Name>
+		<CallbackMethod>menuUpdateFirmwareAll</CallbackMethod>
+	</MenuItem>
+
+	<MenuItem id="menuListBluDevices">
+		<Name>Show BLU Devices on Gateways</Name>
+		<CallbackMethod>menuListBluDevices</CallbackMethod>
+	</MenuItem>
+
 	<MenuItem id="menuResetWebhooks">
 		<Name>Reconfigure Webhooks (All Devices)</Name>
 		<CallbackMethod>menuResetWebhooks</CallbackMethod>

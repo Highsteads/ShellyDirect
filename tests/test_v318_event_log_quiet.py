@@ -91,6 +91,9 @@ def _host(plugin_mod, log_activity=False, **extra):
     h._log_activity = plugin_mod.Plugin._log_activity.__get__(h)
     h._note_webhook_setup_failure = (
         plugin_mod.Plugin._note_webhook_setup_failure.__get__(h))
+    # v3.20.0: commands go through the shipped one-retry helper.
+    h.COMMAND_RETRY_DELAY = 0
+    h._rcommand = plugin_mod.Plugin._rcommand.__get__(h)
     return h
 
 

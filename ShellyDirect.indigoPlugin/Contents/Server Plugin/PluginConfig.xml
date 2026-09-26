@@ -90,6 +90,48 @@ Read from IndigoSecrets.SHELLY_USERNAME / SHELLY_PASSWORD first; these fields ar
 		<Label>Check all devices once per day for available firmware updates. Results are logged and sent via Pushover if the Pushover plugin is installed and enabled.</Label>
 	</Field>
 
+	<Field id="sepPrice" type="separator"/>
+
+	<!-- ── Electricity price on plug LED rings (v3.20.0) ─────────────────── -->
+
+	<Field id="price_light_enabled" type="checkbox" defaultValue="false">
+		<Label>Show Electricity Price on Plug LED Rings:</Label>
+	</Field>
+	<Field id="hlpPriceLight" type="label" fontSize="mini" alignWithControl="true">
+		<Label>Plugs with "Show Electricity Price on LED Ring" ticked show green at the cheap rate, amber at the standard rate and red at the peak rate.</Label>
+	</Field>
+	<Field id="price_rates_var" type="menu" defaultValue=""
+	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
+		<Label>Today's Rates (variable):</Label>
+		<List class="self" filter="" method="getVariableChoices" dynamicReload="true"/>
+	</Field>
+	<Field id="price_rates_var2" type="menu" defaultValue=""
+	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
+		<Label>Tomorrow's Rates (variable):</Label>
+		<List class="self" filter="" method="getVariableChoices" dynamicReload="true"/>
+	</Field>
+	<Field id="hlpPriceRates" type="label" fontSize="mini" alignWithControl="true"
+	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
+		<Label>Optional. A variable holding the day's rates as Octopus publishes them (a JSON list with valid_from, valid_to and value_inc_vat). With these the ring changes on the minute the rate does.</Label>
+	</Field>
+	<Field id="price_now_var" type="menu" defaultValue=""
+	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
+		<Label>Current Price (variable):</Label>
+		<List class="self" filter="" method="getVariableChoices" dynamicReload="true"/>
+	</Field>
+	<Field id="hlpPriceNow" type="label" fontSize="mini" alignWithControl="true"
+	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
+		<Label>A variable holding the price now in pence per kWh. Used when the rates above are not set or do not cover the present moment.</Label>
+	</Field>
+	<Field id="price_cheap_below" type="textfield" defaultValue="20"
+	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
+		<Label>Cheap Below (p/kWh):</Label>
+	</Field>
+	<Field id="price_peak_above" type="textfield" defaultValue="30"
+	       visibleBindingId="price_light_enabled" visibleBindingValue="true">
+		<Label>Peak Above (p/kWh):</Label>
+	</Field>
+
 	<Field id="sep5" type="separator"/>
 
 	<Field id="stale_minutes" type="menu" defaultValue="10">

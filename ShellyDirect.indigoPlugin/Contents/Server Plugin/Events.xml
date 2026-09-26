@@ -107,4 +107,31 @@
 		</ConfigUI>
 	</Event>
 
+	<!-- ── Switched Outside Indigo (v3.20.0) ────────────────────── -->
+	<!--
+	     Fires when a relay changes and the change did not come from Indigo:
+	     the button on the device, the Shelly app, a timer on the device, the
+	     device starting up after a power cut. The Last Switched By state says
+	     which.
+	-->
+	<Event id="switchedOutsideIndigo">
+		<Name>Switched Outside Indigo</Name>
+		<ConfigUI>
+			<Field id="deviceId" type="menu" defaultValue="any">
+				<Label>Device:</Label>
+				<List class="self" filter="self" method="getRelayDevices"/>
+			</Field>
+		</ConfigUI>
+	</Event>
+
+	<!-- ── Several Devices Offline Together (v3.20.0) ────────────── -->
+	<!--
+	     Fires once when three or more devices stop answering within a few
+	     minutes of each other - usually the Wi-Fi or the router rather than
+	     the devices. The single-device Device Went Offline still fires too.
+	-->
+	<Event id="manyDevicesOffline">
+		<Name>Several Devices Offline Together</Name>
+	</Event>
+
 </Events>

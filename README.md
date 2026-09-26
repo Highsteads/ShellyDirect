@@ -2,7 +2,7 @@
 
 Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo](https://www.indigodomo.com/). No cloud, no MQTT — the plugin talks to each Shelly straight over your LAN, and the Shellys push their state changes back to Indigo over a small built-in webhook listener.
 
-**Version:** 3.19.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 3.20.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 *Developed and tested on Indigo 2025.2 / Python 3.13. Older Indigo releases that meet the minimum API version above should also work — the API floor is what Indigo's plugin loader actually checks.*
 
@@ -32,6 +32,14 @@ Direct local-network control of Shelly Gen 2/3/4 smart home devices from [Indigo
 
 ## Recent changes
 
+- **v3.20.0** — new features.
+  - **The electricity price on your plugs' LED rings.** Tick a box on a Plus Plug UK (or Plug S) and its ring shows green at the cheap rate, amber at the standard rate and red at the peak rate, bright while the plug is on and dim while it is off. Point the plugin at a variable holding your rates in Octopus's format and the ring changes on the minute the rate does, or at a variable holding the current price. Untick it and the ring goes back to how it was.
+  - **Safety settings held on the plug itself.** Turn off after so many minutes, cut the power above a wattage or current, and what to do after a power cut. The Shelly enforces them, so they keep working when Indigo is down. The plugin puts them back if something else changes them.
+  - **Firmware updates from Indigo.** An Update Firmware action and a menu item that updates every device one at a time, waits for each to come back, and switches a relay back if the restart changed it. Tick Hold Firmware on anything that must never restart unattended. The daily firmware notice now reads as a sentence.
+  - **One line when the network drops.** When three or more devices stop answering within three minutes of each other, the log says so in one line and a new Several Devices Offline Together trigger fires, instead of a warning per device. A device that drops for a minute and comes straight back gets one quiet line.
+  - **Who switched it.** Each relay has a Last Switched By state (Indigo, the button on the device, the Shelly app, its own timer, starting up after a power cut), and a new Switched Outside Indigo trigger fires when anything other than Indigo changes it.
+  - **A lost command is sent again.** A command that cannot reach the device is retried once, a second later, before it is reported as failed.
+  - **BLU sensors without scripts.** A new Shelly BLU Sensor device reads a BLU H&T, Door/Window, Motion or Distance sensor straight from a Gen 3, Gen 4 or Pro Shelly's own Bluetooth (BTHome) support. A new menu item lists every BLU device paired with each gateway. This was built from Shelly's documentation and a live Gen 4 gateway, but with no BLU sensor to test against.
 - **v3.19.0** — a full review, with the fixes that came out of it.
   - **A plug could report as another device.** When two devices once shared an address, the plug left holding the other device's webhooks kept them for ever, because the plugin only removed a webhook whose device had been deleted. So switching that plug would have written its on/off, and "online", into the other device. The plugin now removes any webhook that belongs to a device on a different Shelly, points at an old Indigo address or port, or is registered twice. The listener also ignores a webhook that did not come from the Shelly it names, and removes it from the device that sent it. There is a tick box to turn that check off if a router between Indigo and your Shellys rewrites their addresses.
   - **Button and input webhooks now work.** The plugin had been asking for input events under names Shelly does not use, so no i4, Uni, Plus 1 or Mini input ever pushed a press to Indigo, and the refusal was logged as "no input component". They now use Shelly's real event names, and are only asked for on devices that actually have inputs.
@@ -97,6 +105,7 @@ Discovery recognises a Shelly by the `app` name it reports and creates the match
 | **Flood** (`shellyFlood`) | Flood Gen 4 |
 | **BLU Button** (`shellyBluButton`) | Shelly BLU Button (via a Shelly Plus/Pro BLE gateway) |
 | **BLU RC Button 4** (`shellyBluRC4`) | Shelly BLU RC Button 4 (via a BLE gateway) |
+| **BLU Sensor** (`shellyBluSensor`) | Shelly BLU H&T, Door/Window, Motion, Distance and other BTHome sensors, read through a Gen 3, Gen 4 or Pro gateway's own Bluetooth support |
 
 The H&T, Smoke and Flood sensors are battery devices that sleep between events, so they are push-only — they report when something changes rather than being polled.
 
@@ -121,6 +130,7 @@ Open **Plugins → Shelly Direct → Configure** and fill in:
 | **HTTP Request Timeout** | How long to wait for a Shelly to answer (2, 3, 5 or 10 seconds). 3 is a good default. |
 | **Shelly Username / Password** | Optional. Only needed if your Shellys have authentication switched on. If set, Digest Auth is used on every request, and all devices must share the same credentials. |
 | **Daily Firmware Update Notifications** | Check all devices once a day for available firmware and report them in the log (and via Pushover if you run the Pushover plugin). |
+| **Show Electricity Price on Plug LED Rings** | Turns the price light on, with a variable for today's and tomorrow's rates (Octopus format), a variable for the current price, and the cheap and peak thresholds in pence. |
 | **Check Webhook Sender** | On by default. Ignore a webhook unless it comes from the Shelly it names. Untick only if a router between Indigo and your Shellys rewrites their addresses. |
 | **Offline Detection Threshold** | Mark a device offline if nothing is heard from it (poll or webhook) within this window. |
 | **Log Level** | How chatty the log is, from Detailed Debugging down to Errors Only. |
@@ -146,6 +156,10 @@ Indigo Server IP and the Shelly credentials can also be read from a shared `Indi
 | **Mirror to variable** | most | Copy this device's key states into Indigo variables in the "ShellyDirect" folder. |
 | **Poll interval** | most | How often to poll, in seconds (covers and i4 default to a brisk 10s, others to 30s). |
 | **Suppress offline alerts** | relay | Stop the offline warning and trigger for a device you know comes and goes. |
+| **Show Electricity Price on LED Ring** | relay (plugs with a ring) | Green, amber or red for the cheap, standard and peak rate. Needs a price source in the plugin settings. |
+| **Manage Switch Settings from Indigo** | relay | Turn Off After (minutes), Cut Power Above (W / A) and After a Power Cut, held on the Shelly itself. Blank fields are left as the device has them. |
+| **Hold Firmware** | all mains devices | Never update this device's firmware from Indigo. |
+| **Show in Device List** | BLU sensor | A reading (temperature, light, distance) or open/closed and motion. |
 | **3-phase** | energy meter | Treat this EM as a three-phase meter and report all three phases. |
 | **BTHome Device ID** | BLU button / RC4 | The bthome component id the BLE gateway uses for this button (an integer such as 200). |
 
@@ -179,7 +193,8 @@ As well as the standard Indigo On / Off / Toggle / Set Brightness / Set Color ac
 | **Set Tilt Angle** | cover | Set venetian-blind slat angle, 0 (closed) to 100 (open). |
 | **Set Brightness** | dimmer | Set brightness 0-100. |
 | **Set RGBW Color** | RGBW | Set red, green, blue, white (0-255 each) and brightness (0-100). |
-| **Set Light Effect** | RGBW | Run a built-in effect (Meteor shower, Gradual change, Flash, and so on), or Static to cancel one. |
+| **Set Light Effect** | RGBW | Not available on Gen 2 and later firmware, which has no equivalent; the action logs a warning and does nothing. Kept so existing actions do not break. |
+| **Update Firmware** | any mains device | Install the stable firmware update, wait for the device to come back, and switch a relay back if the restart changed it. Skips devices marked Hold Firmware. |
 
 ---
 
@@ -191,6 +206,8 @@ As well as the standard Indigo On / Off / Toggle / Set Brightness / Set Color ac
 | **BLU Button Pressed** | A Shelly BLU Button or BLU RC Button 4 is pressed | Device, press type (single / double / triple / long), and button 1-4 (RC4 only) |
 | **Device Went Offline** | A device stops responding to polls or webhooks | Device |
 | **High Power Alert** | A power-metering relay crosses its configured wattage (rising edge only, resets when power drops back) | Device |
+| **Switched Outside Indigo** | A relay is switched by anything other than Indigo: its button, the Shelly app, its own timer, a power cut | Device |
+| **Several Devices Offline Together** | Three or more devices stop answering within three minutes of each other | none |
 
 ---
 
@@ -214,6 +231,8 @@ Shelly BLU buttons have no IP of their own — they reach Indigo through a mains
 
 The plugin registers press-event webhooks on the gateway, and presses arrive as the BLU Button Pressed trigger. The RC Button 4 reports which of its four buttons was pressed and also supports triple-press.
 
+**BLU sensors (v3.20.0).** A Gen 3, Gen 4 or Pro Shelly can pair BLU sensors itself (its web page, Components, Add BTHome device), with no script. Create a **Shelly BLU Sensor** device, set its IP Address to the gateway's, and its BTHome Device ID to the number **Show BLU Devices on Gateways** lists. The plugin reads every value the sensor reports, using the names the gateway gives them, and the gateway pushes each change through a webhook.
+
 ---
 
 ## Plugin menu
@@ -226,6 +245,8 @@ The plugin registers press-event webhooks on the gateway, and presses arrive as 
 | **Show mDNS Discovered Shellys** | List every Shelly announcing itself on the network, its MAC and current address, and the Indigo device it matches — the quickest way to spot a device whose stored address has gone stale. |
 | **Device Health Summary** | Log a table of every device — IP, type, online state, firmware, and when it was last heard from. |
 | **Check Firmware Versions** | Ask every device whether a firmware update is available and log the result. |
+| **Update Firmware on All Devices** | Update every device one at a time, skipping any marked Hold Firmware. |
+| **Show BLU Devices on Gateways** | List every BLU device paired with each Gen 3 / Gen 4 / Pro gateway, with its BTHome id and what it reports. |
 | **Reconfigure Webhooks (All Devices)** | Re-register webhooks on every device — useful after network changes. |
 | **Export Energy History to CSV** | Write the 30-day energy history to a CSV file. |
 | **Toggle Timestamps in Log (on/off)** | Turn the millisecond log prefix on or off. |

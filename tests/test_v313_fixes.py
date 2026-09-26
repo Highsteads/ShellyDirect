@@ -81,6 +81,7 @@ def _apply_receiver(plugin_mod, log_activity=False):
         _qp_int=plugin_mod.Plugin._qp_int,
         _qp_float=plugin_mod.Plugin._qp_float,
         log_activity=log_activity,
+        _switch_changed={},
     )
     # Bind the SHIPPED helper, not a stub: these tests are the only thing that
     # proves the webhook echoes land in the plugin's own log and not the
@@ -93,19 +94,20 @@ def _apply_receiver(plugin_mod, log_activity=False):
 
 def test_webhook_switch_on(plugin_mod):
     r = _apply_receiver(plugin_mod)
-    # v3.14 contract: a NON-PM relay's webhook defers its poll (nothing else
-    # to fetch); a PM relay keeps its poll cadence (power/energy data).
+    # v3.20.0 contract: a switch webhook queues an IMMEDIATE poll for every
+    # relay (last_polled 0), because the poll reads who switched it. This also
+    # keeps the v3.14 promise that toggling never DEFERS a PM relay's poll.
     non_pm = FakeDev(1, "Plug", props={"has_pm": False})
     plugin_mod.Plugin._apply_webhook_event(r, non_pm,
                                            _qs({"type": "switch", "state": "on"}))
     assert non_pm.states["onOffState"] is True
-    assert 1 in r.last_polled
+    assert r.last_polled[1] == 0
 
     pm = FakeDev(2, "PM Plug", props={"has_pm": True})
     plugin_mod.Plugin._apply_webhook_event(r, pm,
                                            _qs({"type": "switch", "state": "off"}))
     assert pm.states["onOffState"] is False
-    assert 2 not in r.last_polled, "PM relay must keep its poll cadence"
+    assert r.last_polled[2] == 0, "a PM relay's poll is brought forward, never deferred"
 
 
 def test_webhook_uni_input0_writes_input0_state(plugin_mod):
@@ -310,6 +312,7 @@ def test_closed_prefs_keeps_secrets_precedence(plugin_mod, monkeypatch):
         _pref_int=plugin_mod.Plugin._pref_int,
         indigo_log_handler=types.SimpleNamespace(setLevel=lambda l: None),
     )
+    receiver._load_price_prefs = plugin_mod.Plugin._load_price_prefs.__get__(receiver)
     plugin_mod.Plugin.closedPrefsConfigUi(
         receiver, {"discovery_subnets": "10.0.0", "shelly_username": "guiuser",
                    "shelly_password": "guipass"}, False)

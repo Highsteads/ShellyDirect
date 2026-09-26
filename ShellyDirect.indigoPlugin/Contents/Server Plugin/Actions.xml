@@ -106,4 +106,10 @@
 		</ConfigUI>
 	</Action>
 
+	<!-- ── Firmware (v3.20.0) ──────────────────────────────────── -->
+	<Action id="actionUpdateFirmware" deviceFilter="self" uiPath="Advanced">
+		<Name>Update Firmware</Name>
+		<CallbackMethod>actionUpdateFirmware</CallbackMethod>
+	</Action>
+
 </Actions>

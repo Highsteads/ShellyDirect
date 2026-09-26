@@ -3,9 +3,33 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4, 3.19.0)
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 3.20.0)
 # Date:        26-09-2026
-# Version:     3.19.0
+# Version:     3.20.0
+#
+# v3.20.0 (26-09-2026): NEW FEATURES from the full review.
+# * Price light: plugs with an LED ring (pluguk_ui / plugs_ui) show the
+#   electricity price band -- green cheap, amber standard, red peak; bright
+#   when on, dim when off. Source: Octopus-format rate lists in variables
+#   (exact to the minute), else a current-price variable. The ring's own
+#   config is saved in props["led_original"] and restored on opt-out.
+# * Switch settings held on the device (Switch.SetConfig): auto-off minutes,
+#   power and current limits, state after a power cut. Only fields set in
+#   Indigo are managed; re-asserted every six hours.
+# * Firmware: Update Firmware action + menu (one device per box, one at a
+#   time, waits for the new version, puts a relay back if the restart moved
+#   it), Hold Firmware prop, plain-English daily notice.
+# * Offline and back-online log lines held three minutes and grouped: three or
+#   more together make one line and fire manyDevicesOffline; a short drop
+#   makes one quiet line.
+# * lastChangedBy state + switchedOutsideIndigo trigger from Switch.GetStatus
+#   source/tag; the plugin's Switch.Set carries tag=indigo.
+# * _rcommand: one retry, a second later, for a command that could not reach
+#   the device.
+# * shellyBluSensor: BLU sensors read through a gateway's BTHome component
+#   (Shelly.GetComponents dynamic_only), readings named by
+#   BTHome.GetObjectInfos; GATEWAY_CHILD_TYPES keeps gateway children out of
+#   every "who owns this address" selection. Built with no BLU sensor to test.
 #
 # v3.19.0 (26-09-2026): FULL REVIEW — code bug-hunt, live survey of all 19
 # devices and a Shelly API currency check.
@@ -425,7 +449,7 @@ import sys as _sys
 import threading
 import time
 import urllib.parse
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from requests.auth import HTTPDigestAuth
 
 import requests
@@ -781,6 +805,205 @@ def format_seen_keys(seen):
 
 
 # ---------------------------------------------------------------------------
+# Plain-English helpers (v3.20.0) — log lines and notifications are written
+# for people: counts in words, lists joined with "and".
+# ---------------------------------------------------------------------------
+_NUMBER_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven",
+                 "eight", "nine", "ten", "eleven", "twelve")
+
+
+def count_words(n, noun, plural=None):
+    """'one device', 'four devices', '23 devices'."""
+    word = _NUMBER_WORDS[n] if 0 <= n < len(_NUMBER_WORDS) else str(n)
+    return f"{word} {noun if n == 1 else (plural or noun + 's')}"
+
+
+def sentence_start(text):
+    """Capital first letter only -- str.capitalize() lower-cases the rest,
+    which turns "four Shelly devices" into "Four shelly devices"."""
+    return text[:1].upper() + text[1:]
+
+
+def join_names(names):
+    """'a', 'a and b', 'a, b and c'."""
+    names = [str(n) for n in names]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+# ---------------------------------------------------------------------------
+# Who switched it (v3.20.0)
+#
+# Switch.GetStatus reports `source` (what last changed the output) and, from
+# firmware 2.0.0, the `tag` the last command carried. The plugin tags its own
+# commands "indigo", so a change can be put down to Indigo, the device's own
+# button, the Shelly app, a timer, a power cut and so on.
+# ---------------------------------------------------------------------------
+COMMAND_TAG = "indigo"
+
+_SOURCE_LABELS = {
+    "button":   "the button on the device",
+    "switch":   "the switch wired to the device",
+    "input":    "the switch wired to the device",
+    "shc":      "the Shelly app",
+    "cloud":    "the Shelly app",
+    "timer":    "the device's own timer",
+    "init":     "the device starting up",
+    "loopback": "a script on the device",
+    "script":   "a script on the device",
+    "schedule": "a schedule on the device",
+    "limit_switch": "a safety limit on the device",
+}
+
+
+def switch_source_label(source, tag=""):
+    """Who changed a switch, in words. An unknown source is shown in quotes
+    rather than dropped, so a new one surfaces instead of vanishing."""
+    src = str(source or "").strip()
+    if str(tag or "") == COMMAND_TAG:
+        return "Indigo"
+    if not src:
+        return ""
+    key = src.lower()
+    if key in ("http_in", "ws_in", "http", "rpc", "mqtt", "udp"):
+        return "another app on the network"
+    return _SOURCE_LABELS.get(key, f'"{src}"')
+
+
+# ---------------------------------------------------------------------------
+# Switch settings held on the device (v3.20.0)
+#
+# A limit the Shelly enforces itself keeps working when Indigo is down, the
+# network is down or the plugin is stopped. Only fields the user has set in
+# Indigo are managed; everything else on the device is left as it is.
+# ---------------------------------------------------------------------------
+INITIAL_STATES = ("off", "on", "restore_last", "match_input")
+
+
+def wanted_switch_config(props):
+    """The Switch.SetConfig fields this device's Indigo settings ask for."""
+    if not as_bool(props.get("manage_switch_settings"), False):
+        return {}
+    want = {}
+    try:
+        minutes = float(str(props.get("auto_off_minutes", "") or "0").strip() or 0)
+    except ValueError:
+        minutes = 0
+    if minutes > 0:
+        want["auto_off"] = True
+        want["auto_off_delay"] = round(minutes * 60, 1)
+    else:
+        want["auto_off"] = False
+    for key, prop in (("power_limit", "power_limit_w"), ("current_limit", "current_limit_a")):
+        raw = str(props.get(prop, "") or "").strip()
+        if raw:
+            try:
+                val = float(raw)
+            except ValueError:
+                continue
+            if val > 0:
+                want[key] = int(val) if key == "power_limit" else round(val, 1)
+    state = str(props.get("initial_state", "") or "").strip()
+    if state in INITIAL_STATES:
+        want["initial_state"] = state
+    return want
+
+
+def switch_config_changes(current, wanted):
+    """The subset of `wanted` that differs from the device's current config."""
+    changes = {}
+    for key, val in wanted.items():
+        have = (current or {}).get(key)
+        if isinstance(val, float) or isinstance(have, float):
+            try:
+                if have is not None and abs(float(have) - float(val)) < 0.05:
+                    continue
+            except (TypeError, ValueError):
+                pass
+        elif have == val:
+            continue
+        changes[key] = val
+    return changes
+
+
+def describe_switch_config(changes):
+    """Switch settings in words, for the log."""
+    parts = []
+    if "auto_off" in changes:
+        if changes["auto_off"]:
+            mins = changes.get("auto_off_delay", 0) / 60.0
+            parts.append(f"turn itself off {mins:g} minutes after being turned on")
+        else:
+            parts.append("no automatic turn-off")
+    if "power_limit" in changes:
+        parts.append(f"cut the power above {changes['power_limit']} W")
+    if "current_limit" in changes:
+        parts.append(f"cut the power above {changes['current_limit']:g} A")
+    if "initial_state" in changes:
+        parts.append({"off": "stay off after a power cut",
+                      "on": "come on after a power cut",
+                      "restore_last": "go back to how it was after a power cut",
+                      "match_input": "follow its switch after a power cut",
+                      }.get(changes["initial_state"], changes["initial_state"]))
+    return join_names(parts)
+
+
+# ---------------------------------------------------------------------------
+# Electricity price on the plug's LED ring (v3.20.0)
+# ---------------------------------------------------------------------------
+PRICE_BANDS = ("cheap", "standard", "peak")
+PRICE_COLOURS = {                       # Shelly LED colours are 0-100 per channel
+    "cheap":    [0, 100, 0],            # green
+    "standard": [100, 55, 0],           # amber
+    "peak":     [100, 0, 0],            # red
+}
+LED_UI_COMPONENTS = ("pluguk_ui", "plugs_ui")
+
+
+def parse_rate_spans(text):
+    """[(start, end, pence)] from an Octopus-style rates list (JSON text).
+
+    Each entry needs valid_from, valid_to and value_inc_vat. valid_to may be
+    null for an open-ended rate. Anything unreadable is skipped.
+    """
+    try:
+        data = json.loads(text) if isinstance(text, str) else text
+    except (TypeError, ValueError):
+        return []
+    spans = []
+    for row in data if isinstance(data, list) else []:
+        try:
+            start = datetime.fromisoformat(str(row["valid_from"]).replace("Z", "+00:00"))
+            raw_end = row.get("valid_to")
+            end = (datetime.fromisoformat(str(raw_end).replace("Z", "+00:00"))
+                   if raw_end else None)
+            spans.append((start, end, float(row["value_inc_vat"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return spans
+
+
+def price_now(spans, now_utc):
+    """The price of the span covering `now_utc`, or None."""
+    for start, end, pence in spans:
+        if start <= now_utc and (end is None or now_utc < end):
+            return pence
+    return None
+
+
+def price_band(pence, cheap_below, peak_above):
+    """'cheap', 'standard' or 'peak' for a price in pence, or None."""
+    if pence is None:
+        return None
+    if pence < cheap_below:
+        return "cheap"
+    if pence > peak_above:
+        return "peak"
+    return "standard"
+
+
+# ---------------------------------------------------------------------------
 # APP_INFO  {app_field: (display_label, has_pm, device_type_id, num_channels)}
 # device_type_id matches Devices.xml <Device id="...">
 # num_channels > 1 triggers multi-device creation in discovery
@@ -882,6 +1105,11 @@ PUSH_ONLY_TYPES = {"shellyHT", "shellySmoke", "shellyFlood"}
 # Bluetooth devices — no IP of their own; reach Indigo via gateway POST webhooks
 BLU_TYPES       = {"shellyBluButton", "shellyBluRC4"}
 
+# Devices that live on ANOTHER Shelly's address: BLU buttons (event only) and
+# BLU sensors read through a gateway's BTHome component (v3.20.0, polled). Any
+# selection that asks "which device owns this address" must skip all of them.
+GATEWAY_CHILD_TYPES = BLU_TYPES | {"shellyBluSensor"}
+
 # Device types that use Light.Set / Light.GetStatus instead of Switch.*
 LIGHT_TYPES     = {"shellyDimmer", "shellyRGBW"}
 
@@ -975,7 +1203,7 @@ def detect_shelly_devices(device_info, config_keys):
 _RPC_HANDLED_KEYS = {
     # Switch / Light common
     "id", "output", "apower", "voltage", "current", "temperature", "aenergy",
-    "ret_aenergy", "errors",
+    "ret_aenergy", "errors", "tag",
     # Light specific
     "brightness", "rgb", "white", "mode", "transition", "effect",
     # Cover specific
@@ -1121,6 +1349,18 @@ class Plugin(indigo.PluginBase):
         # Shelly's own authority. Hosts that redirected once are remembered.
         self._https_hosts      = set()
 
+        # ── v3.20.0 ──────────────────────────────────────────────────────────
+        self._offline_batch    = []   # [(ts, name, reason)] waiting to be reported
+        self._online_batch     = []   # [(ts, name, how)]
+        self._switch_changed   = {}   # {dev_id: True} a webhook saw the switch move
+        self._led_applied      = {}   # {dev_id: price band shown on its ring}
+        self._price_checked    = 0.0
+        self._price_band       = None
+        self._price_pence      = None
+        self._firmware_busy    = threading.Lock()
+        self._obj_names        = {}   # {gateway ip: {obj_id: name}} BTHome object names
+        self._load_price_prefs(prefs)
+
         log_level = self._pref_int(prefs, "logLevel", logging.INFO)
         self.indigo_log_handler.setLevel(log_level)
         self._load_energy_data()
@@ -1200,19 +1440,24 @@ class Plugin(indigo.PluginBase):
         # v3.14: the initial poll + webhook configure moved OFF the lifecycle
         # thread — with several offline devices, plugin startup used to stall
         # for (devices x timeout) seconds doing serial blocking network I/O.
+        if dev.deviceTypeId == "shellyBluSensor":
+            self._blu_sensor_display(dev)
+
         def _start_net():
             try:
                 # BLU devices are pure-event Bluetooth peripherals — no direct poll
                 if dev.deviceTypeId not in BLU_TYPES:
                     self._poll_device(dev)
                 self._configure_webhooks(dev)
+                if dev.deviceTypeId == "shellyRelay":
+                    self._apply_switch_settings(dev)
             except Exception as exc:
                 self.logger.debug(f"[{dev.name}] startComm network init: {exc}")
         threading.Thread(target=_start_net, daemon=True).start()
         # Backfill MAC address for existing devices that pre-date MAC storage.
         # Guard: only run if mac_address not yet stored, avoiding recursive trigger
         # from replacePluginPropsOnServer inside _backfill_mac.
-        if not dev.pluginProps.get("mac_address") and dev.deviceTypeId not in BLU_TYPES:
+        if not dev.pluginProps.get("mac_address") and dev.deviceTypeId not in GATEWAY_CHILD_TYPES:
             threading.Thread(
                 target=self._backfill_mac, args=(dev,), daemon=True
             ).start()
@@ -1228,7 +1473,11 @@ class Plugin(indigo.PluginBase):
     # profile -- used to restart the device too, because Indigo's default says
     # "restart on ANY change". Each restart re-ran the webhook configure, and
     # two of them overlapping is what doubled the hooks on two plugs.
-    RESTART_PROPS = ("ip_address", "channel_id", "bthome_id")
+    RESTART_PROPS = ("ip_address", "channel_id", "bthome_id",
+                     # v3.20.0: a change here must reach the device, and the
+                     # restart is what sends it (see _apply_switch_settings).
+                     "manage_switch_settings", "auto_off_minutes", "power_limit_w",
+                     "current_limit_a", "initial_state", "display_kind")
 
     def didDeviceCommPropertyChange(self, orig_dev, new_dev):
         old, new = orig_dev.pluginProps, new_dev.pluginProps
@@ -1287,6 +1536,8 @@ class Plugin(indigo.PluginBase):
             self.firmware_notify = values_dict.get("firmware_notify_enabled", False)
             self.log_activity    = as_bool(values_dict.get("logActivityToEventLog"), False)
             self.webhook_source_check = as_bool(values_dict.get("webhook_source_check"), True)
+            self._load_price_prefs(values_dict)
+            self._price_checked = 0.0          # re-read the price on the next tick
             self.mac_verify_secs = max(60, self._pref_int(values_dict, "mac_verify_minutes",
                                                           MAC_VERIFY_MINUTES) * 60)
             self.indigo_log_handler.setLevel(self._pref_int(values_dict, "logLevel", logging.INFO))
@@ -1299,12 +1550,12 @@ class Plugin(indigo.PluginBase):
         the test is on address + channel, and only devices with a DIFFERENT MAC
         count as a clash.
         """
-        if type_id in BLU_TYPES:
+        if type_id in GATEWAY_CHILD_TYPES:
             return ""
         chan = str(values_dict.get("channel_id", "0") or "0")
         mac  = normalise_mac(values_dict.get("mac_address", ""))
         for dev in indigo.devices.iter("self"):
-            if dev.id == dev_id or dev.deviceTypeId in BLU_TYPES:
+            if dev.id == dev_id or dev.deviceTypeId in GATEWAY_CHILD_TYPES:
                 continue
             props = dev.pluginProps
             if props.get("ip_address", "").strip() != ip:
@@ -1321,7 +1572,7 @@ class Plugin(indigo.PluginBase):
         errors = indigo.Dict()
         ip = values_dict.get("ip_address", "").strip()
         if not ip:
-            label = "Gateway IP address is required." if type_id in BLU_TYPES else "IP address is required."
+            label = "Gateway IP address is required." if type_id in GATEWAY_CHILD_TYPES else "IP address is required."
             errors["ip_address"] = label
         else:
             parts = ip.split(".")
@@ -1335,7 +1586,7 @@ class Plugin(indigo.PluginBase):
                         f"address poll the same physical Shelly and corrupt each other's "
                         f"energy figures. Give this one its own address."
                     )
-        if type_id in BLU_TYPES:
+        if type_id in GATEWAY_CHILD_TYPES:
             bthome_id = values_dict.get("bthome_id", "").strip()
             if not bthome_id:
                 errors["bthome_id"] = "BTHome Device ID is required (integer, e.g. 200)."
@@ -1344,6 +1595,17 @@ class Plugin(indigo.PluginBase):
                     int(bthome_id)
                 except ValueError:
                     errors["bthome_id"] = "BTHome Device ID must be an integer (e.g. 200, 201, 202)."
+        if type_id == "shellyRelay" and as_bool(values_dict.get("manage_switch_settings"), False):
+            for field, label in (("auto_off_minutes", "minutes"), ("power_limit_w", "watts"),
+                                 ("current_limit_a", "amps")):
+                raw = str(values_dict.get(field, "") or "").strip()
+                if not raw:
+                    continue
+                try:
+                    if float(raw) < 0:
+                        raise ValueError
+                except ValueError:
+                    errors[field] = f"Enter a number of {label}, or leave it blank."
         if type_id == "shellyRelay" and values_dict.get("power_alert_enabled", False):
             try:
                 float(values_dict.get("power_alert_watts", ""))
@@ -1490,9 +1752,9 @@ class Plugin(indigo.PluginBase):
             if not ip:
                 log(f'[{dev.name}] No IP for on_for_seconds', level="ERROR")
                 return
-            resp = self._rget(
-                f"http://{ip}/rpc/Switch.Set?id={chan}&on=true&toggle_after={seconds}"
-            )
+            resp = self._rcommand(
+                f"http://{ip}/rpc/Switch.Set",
+                params={"id": chan, "on": "true", "toggle_after": seconds, "tag": COMMAND_TAG})
             resp.raise_for_status()
             self._log_activity(f'[{dev.name}] on for {seconds}s')
             dev.updateStateOnServer("onOffState", True)
@@ -1516,7 +1778,7 @@ class Plugin(indigo.PluginBase):
             if not ip:
                 return
             chan = self._pref_int(dev.pluginProps, "channel_id", 0)
-            resp = self._rget(f"http://{ip}/rpc/Cover.GoToPosition", params={"id": chan, "pos": pos})
+            resp = self._rcommand(f"http://{ip}/rpc/Cover.GoToPosition", params={"id": chan, "pos": pos})
             resp.raise_for_status()
             dev.updateStateOnServer("targetPosition", pos)
             # Same motor, same reasoning as _cover_cmd above: a blind driven to
@@ -1536,7 +1798,7 @@ class Plugin(indigo.PluginBase):
             if not ip:
                 return
             chan = self._pref_int(dev.pluginProps, "channel_id", 0)
-            resp = self._rget(
+            resp = self._rcommand(
                 f"http://{ip}/rpc/Cover.GoToPosition",
                 params={"id": chan, "slat_pos": tilt}
             )
@@ -1584,11 +1846,11 @@ class Plugin(indigo.PluginBase):
                 params = {"id": chan, "on": "true",
                           "rgb": json.dumps([r, g, b]), "white": w,
                           "brightness": br}
-                resp = self._rget(f"http://{ip}/rpc/RGBW.Set", params=params)
+                resp = self._rcommand(f"http://{ip}/rpc/RGBW.Set", params=params)
             elif prof == "rgb":
                 params = {"id": chan, "on": "true",
                           "rgb": json.dumps([r, g, b]), "brightness": br}
-                resp = self._rget(f"http://{ip}/rpc/RGB.Set", params=params)
+                resp = self._rcommand(f"http://{ip}/rpc/RGB.Set", params=params)
             else:
                 log(f'[{dev.name}] Set Color skipped — device is in "light" '
                     f'profile (independent white channels, no colour component)',
@@ -1651,6 +1913,13 @@ class Plugin(indigo.PluginBase):
                     threading.Thread(
                         target=self._check_webhook_health, daemon=True
                     ).start()
+
+                # v3.20.0: grouped offline / back-online reporting, and the
+                # electricity price on the plugs' LED rings.
+                self._flush_presence(now)
+                if (now - self._price_checked) >= 60:
+                    self._price_checked = now
+                    threading.Thread(target=self._update_price_light, daemon=True).start()
 
                 # Firmware notification once per day (if enabled)
                 if self.firmware_notify and (now - self.last_firmware_check) >= 86400:
@@ -1719,12 +1988,8 @@ class Plugin(indigo.PluginBase):
 
     def _menu_check_firmware_body(self, values_dict=None, type_id=""):
         log("Checking firmware versions ...")
-        for dev in indigo.devices.iter("self"):
-            if not dev.enabled:
-                continue
+        for dev in self._firmware_candidates():
             ip = dev.pluginProps.get("ip_address", "").strip()
-            if not ip:
-                continue
             try:
                 resp = self._rget(f"http://{ip}/rpc/Shelly.CheckForUpdate")
                 resp.raise_for_status()
@@ -1909,13 +2174,16 @@ class Plugin(indigo.PluginBase):
         dev_id   = target.id
 
         if ev_type == "switch" and state in ("on", "off"):
+            # v3.20.0: remember that it MOVED, so the next poll -- queued now
+            # -- can say who moved it. The poll cannot tell by itself, because
+            # this write has already brought the state up to date.
+            # The poll is queued for EVERY relay (it used to be deferred for
+            # one without power metering): it is where source and tag are read.
+            if bool(target.states.get("onOffState")) != (state == "on"):
+                self._switch_changed[dev_id] = True
+            self.last_polled[dev_id] = 0
             target.updateStateOnServer("onOffState", state == "on")
-            # v3.14: only NON-PM relays may defer their poll — a PM device's
-            # poll also carries power/energy, and frequent toggling used to
-            # defer it indefinitely.
-            if not target.pluginProps.get("has_pm", True):
-                self.last_polled[dev_id] = time.time()
-            self.logger.debug(f'[webhook] "{target.name}" switch -> {state}')
+            self.logger.debug(f'[webhook] "{target.name}" switch -> {state} - poll queued')
 
         elif ev_type == "button":
             press = self._qp(params, "event", "single")
@@ -1936,6 +2204,10 @@ class Plugin(indigo.PluginBase):
                 key = "sensorValue" if input_id == 0 else f"input{input_id}"
             target.updateStateOnServer(key, state == "on")
             self._log_activity(f'[webhook] "{target.name}" input{input_id} -> {state}')
+
+        elif ev_type == "bthome":
+            self.last_polled[dev_id] = 0   # a BLU sensor reading changed
+            self.logger.debug(f'[webhook] "{target.name}" BLU reading changed - poll queued')
 
         elif ev_type == "cover_change":
             self.last_polled[dev_id] = 0   # trigger immediate poll
@@ -2031,7 +2303,9 @@ class Plugin(indigo.PluginBase):
             # webhooks as though it were the gateway. The other two selections
             # on ip_address in this file already split on BLU_TYPES; this one
             # did not (20-09-2026). v3.19.0: a BLU repair wants a BLU child.
-            if (dev.deviceTypeId in BLU_TYPES) != blu:
+            if blu and dev.deviceTypeId not in BLU_TYPES:
+                continue
+            if not blu and dev.deviceTypeId in GATEWAY_CHILD_TYPES:
                 continue
             if dev.pluginProps.get("ip_address", "").strip() == shelly_ip:
                 current_dev = dev
@@ -2147,7 +2421,7 @@ class Plugin(indigo.PluginBase):
                     plugin.last_seen[dev_id] = time.time()
                     if not target.states.get("deviceOnline", True):
                         target.updateStateOnServer("deviceOnline", True)
-                        plugin.logger.info(f'[{target.name}] back online (webhook)')
+                        plugin._note_back_online(target.name, " (webhook)")
 
                     # Event application lives in Plugin._apply_webhook_event
                     # (v3.13) — extracted from this closure for testability.
@@ -2336,6 +2610,23 @@ class Plugin(indigo.PluginBase):
                 ("light.on",  f"{base}&type=light&state=on",  chan),
                 ("light.off", f"{base}&type=light&state=off", chan),
             ]
+        elif type_id == "shellyBluSensor":
+            # v3.20.0: one hook per reading, on the gateway. A binary reading
+            # (motion, window) fires state_change, a number fires value_change.
+            try:
+                comps = self._gateway_components(ip)
+            except Exception:
+                return [], False
+            bthome_id = self._pref_int(dev.pluginProps, "bthome_id", 0)
+            _st, readings = self._blu_sensor_readings(comps, bthome_id)
+            self._obj_name_map(ip, [o for o, _v, _c in readings])
+            kinds = self._obj_names.get(f"{ip}#type", {})
+            wanted = []
+            for obj_id, _val, cid in readings:
+                event = ("bthomesensor.state_change" if kinds.get(obj_id) == "binary_sensor"
+                         else "bthomesensor.value_change")
+                wanted.append((event, f"{base}&type=bthome&sensor={cid}", cid))
+            return wanted, True
         elif type_id == "shellyI4":
             # 4 inputs x 5 events = 20, exactly the device's webhook limit, so
             # the triple press is deliberately not asked for.
@@ -2689,7 +2980,7 @@ class Plugin(indigo.PluginBase):
         for dev in indigo.devices.iter("self"):
             if not dev.enabled or not dev.configured:
                 continue
-            if dev.deviceTypeId in BLU_TYPES:
+            if dev.deviceTypeId in GATEWAY_CHILD_TYPES:
                 continue
             mac     = normalise_mac(dev.pluginProps.get("mac_address", ""))
             ip      = dev.pluginProps.get("ip_address",  "").strip()
@@ -2840,6 +3131,17 @@ class Plugin(indigo.PluginBase):
                         )
             except Exception:
                 pass   # Device unreachable - skip silently
+        # v3.20.0: put back any on-device switch setting something else has
+        # changed (the Shelly app, a factory reset). Quiet when all is well.
+        for dev in indigo.devices.iter("self"):
+            if (dev.enabled and dev.deviceTypeId == "shellyRelay"
+                    and as_bool(dev.pluginProps.get("manage_switch_settings"), False)
+                    and dev.states.get("deviceOnline", True)):
+                try:
+                    self._apply_switch_settings(dev)
+                except Exception as exc:
+                    self.logger.debug(f"[{dev.name}] switch settings check: {exc}")
+
         if repaired:
             log(f"Webhook health check complete: {repaired} device(s) repaired")
         else:
@@ -2866,7 +3168,7 @@ class Plugin(indigo.PluginBase):
         self.last_seen[dev.id] = time.time()
         if not dev.states.get("deviceOnline", True):
             dev.updateStateOnServer("deviceOnline", True)
-            log(f'[{dev.name}] back online (BLU webhook)')
+            self._note_back_online(dev.name, " (BLU webhook)")
 
         kv = [
             {"key": "sensorValue", "value": True},
@@ -2898,39 +3200,43 @@ class Plugin(indigo.PluginBase):
     # ---------------------------------------------------------------------------
 
     def _firmware_daily_check(self):
-        """Check all devices for firmware updates and send a consolidated log/notification."""
-        updates = []
-        for dev in indigo.devices.iter("self"):
-            if not dev.enabled:
-                continue
+        """Once a day: say, in words, which devices have new firmware waiting.
+        v3.20.0: written for a person (the notification rule), one device per
+        physical Shelly, and it says how to install it."""
+        waiting = {}                       # version -> [device names]
+        for dev in self._firmware_candidates():
             ip = dev.pluginProps.get("ip_address", "").strip()
-            if not ip:
-                continue
             try:
                 resp = self._rget(f"http://{ip}/rpc/Shelly.CheckForUpdate", timeout=3)
                 if resp.status_code == 200:
-                    stable = resp.json().get("stable", {})
-                    if stable:
-                        ver = stable.get("version", "?")
-                        updates.append(f"{dev.name} ({ip}): v{ver} available")
+                    ver = ((resp.json() or {}).get("stable") or {}).get("version")
+                    if ver:
+                        waiting.setdefault(ver, []).append(dev.name)
             except Exception:
                 pass
 
-        if not updates:
+        if not waiting:
             self.logger.debug("Firmware daily check: all devices up to date")
             return
 
-        msg = f"Shelly firmware updates available ({len(updates)} device(s)):\n" + \
-              "\n".join(f"  {u}" for u in updates)
-        log(msg)
+        total = sum(len(v) for v in waiting.values())
+        lines = []
+        for ver, names in sorted(waiting.items()):
+            verb = "is" if len(names) == 1 else "are"
+            lines.append(f"Firmware {ver} is ready for {join_names(names)}, which "
+                         f"{verb} on an older version.")
+        body = (" ".join(lines) + " To install it, use Plugins, Shelly Direct, "
+                "Update Firmware on All Devices. Devices marked Hold Firmware are skipped.")
+        title = (f"New Shelly firmware for {count_words(total, 'device')}")
+        log(f"{title}. {body}")
 
         # Send via Pushover if plugin is available
         try:
             po = indigo.server.getPlugin("io.thechad.indigoplugin.pushover")
             if po and po.isEnabled():
                 po.executeAction("send", props={
-                    "msgTitle":    "Shelly Firmware Updates",
-                    "msgBody":     "\n".join(updates),
+                    "msgTitle":    title,
+                    "msgBody":     body[:1024],
                     "msgPriority": "0",
                 })
         except Exception:
@@ -3217,6 +3523,470 @@ class Plugin(indigo.PluginBase):
         self._identity_mismatch(dev, ip, found)
         return self._resolve_by_mac(dev) or None
 
+    # ---------------------------------------------------------------------------
+    # Electricity price on the plug LED rings (v3.20.0)
+    # ---------------------------------------------------------------------------
+
+    def _load_price_prefs(self, prefs):
+        def _num(key, default):
+            try:
+                return float(str(prefs.get(key, default)).strip())
+            except (TypeError, ValueError):
+                return float(default)
+        self.price_light_enabled = as_bool(prefs.get("price_light_enabled"), False)
+        self.price_rates_vars    = [str(prefs.get(k, "") or "").strip()
+                                    for k in ("price_rates_var", "price_rates_var2")]
+        self.price_now_var       = str(prefs.get("price_now_var", "") or "").strip()
+        self.price_cheap_below   = _num("price_cheap_below", 20)
+        self.price_peak_above    = _num("price_peak_above", 30)
+
+    def _variable_text(self, ref):
+        if not ref:
+            return None
+        try:
+            return indigo.variables[int(ref) if str(ref).isdigit() else ref].value
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    def _current_price(self):
+        """(pence, where it came from) for right now, or (None, "")."""
+        now = datetime.now(timezone.utc)
+        spans = []
+        for ref in self.price_rates_vars:
+            spans += parse_rate_spans(self._variable_text(ref) or "")
+        pence = price_now(spans, now)
+        if pence is not None:
+            return pence, "the rate list"
+        raw = self._variable_text(self.price_now_var)
+        try:
+            return (float(str(raw).strip()), "the price variable") if raw not in (None, "") else (None, "")
+        except ValueError:
+            return None, ""
+
+    def _led_component(self, dev):
+        """'pluguk_ui' / 'plugs_ui' when this device has an LED ring, else ""."""
+        ip = dev.pluginProps.get("ip_address", "").strip()
+        comps = self._device_components(ip) if ip else None
+        for comp in LED_UI_COMPONENTS:
+            if comps and comp in comps:
+                return comp
+        return ""
+
+    def _update_price_light(self):
+        """Work out the price band and bring every opted-in ring up to date;
+        put a ring back as it was when its device opts out."""
+        try:
+            band = None
+            if self.price_light_enabled:
+                pence, where = self._current_price()
+                band = price_band(pence, self.price_cheap_below, self.price_peak_above)
+                if band and band != self._price_band:
+                    self._log_activity(f"Electricity is at the {band} rate now "
+                                       f"({pence:.1f}p a unit, from {where})")
+                self._price_band, self._price_pence = band or self._price_band, pence
+            for dev in indigo.devices.iter("self"):
+                if dev.deviceTypeId != "shellyRelay" or not dev.enabled:
+                    continue
+                wanted = (self.price_light_enabled
+                          and as_bool(dev.pluginProps.get("price_light"), False))
+                if wanted and band and self._led_applied.get(dev.id) != band:
+                    if dev.states.get("deviceOnline", True):
+                        self._show_price_band(dev, band)
+                elif not wanted and dev.pluginProps.get("led_original"):
+                    self._restore_led(dev)
+        except Exception as exc:
+            self.logger.debug(f"price light: {exc}")
+
+    def _led_set(self, ip, comp, leds):
+        return self._rcommand(f"http://{ip}/rpc/{comp.upper()}.SetConfig",
+                              params={"config": json.dumps({"leds": leds})})
+
+    def _show_price_band(self, dev, band):
+        comp = self._led_component(dev)
+        ip   = self._target_ip(dev)
+        if not comp or not ip:
+            return
+        try:
+            if not dev.pluginProps.get("led_original"):
+                cur = self._rget(f"http://{ip}/rpc/{comp.upper()}.GetConfig")
+                cur.raise_for_status()
+                leds = (cur.json() or {}).get("leds", {})
+                keep = {"mode": leds.get("mode", "switch"),
+                        "colors": {"switch:0": (leds.get("colors") or {}).get("switch:0", {})}}
+                with self._props_lock:
+                    props = dict(dev.pluginProps)
+                    props["led_original"] = json.dumps(keep)
+                    dev.replacePluginPropsOnServer(props)
+            rgb = PRICE_COLOURS[band]
+            resp = self._led_set(ip, comp, {
+                "mode": "switch",
+                "colors": {"switch:0": {"on":  {"rgb": rgb, "brightness": 60},
+                                        "off": {"rgb": rgb, "brightness": 10}}}})
+            resp.raise_for_status()
+            self._led_applied[dev.id] = band
+            self.logger.debug(f"[{dev.name}] LED ring shows the {band} rate")
+        except Exception as exc:
+            self.logger.debug(f"[{dev.name}] LED ring not updated: {exc}")
+
+    def _restore_led(self, dev):
+        comp = self._led_component(dev)
+        ip   = self._target_ip(dev)
+        if not comp or not ip:
+            return
+        try:
+            original = json.loads(dev.pluginProps.get("led_original") or "{}")
+            if original:
+                self._led_set(ip, comp, original).raise_for_status()
+            with self._props_lock:
+                props = dict(dev.pluginProps)
+                props.pop("led_original", None)
+                dev.replacePluginPropsOnServer(props)
+            self._led_applied.pop(dev.id, None)
+            self._log_activity(f"[{dev.name}] LED ring put back as it was")
+        except Exception as exc:
+            self.logger.debug(f"[{dev.name}] LED ring not restored: {exc}")
+
+    # ---------------------------------------------------------------------------
+    # Switch settings held on the device (v3.20.0)
+    # ---------------------------------------------------------------------------
+
+    def _apply_switch_settings(self, dev, quiet_if_same=True):
+        """Make the device's own switch settings match what Indigo asks for.
+        Returns the changes sent ({} when there was nothing to do)."""
+        wanted = wanted_switch_config(dev.pluginProps)
+        if not wanted:
+            return {}
+        ip = self._target_ip(dev)
+        if not ip:
+            return {}
+        chan = self._pref_int(dev.pluginProps, "channel_id", 0)
+        try:
+            cur = self._rget(f"http://{ip}/rpc/Switch.GetConfig", params={"id": chan})
+            cur.raise_for_status()
+            changes = switch_config_changes(cur.json() or {}, wanted)
+            if not changes:
+                return {}
+            resp = self._rget(f"http://{ip}/rpc/Switch.SetConfig",
+                              params={"id": chan, "config": json.dumps(changes)})
+            resp.raise_for_status()
+            if "code" in (resp.json() or {}):
+                raise RuntimeError((resp.json() or {}).get("message", "refused"))
+            log(f"[{dev.name}] set on the device: {describe_switch_config(changes)}")
+            return changes
+        except Exception as exc:
+            log(f"[{dev.name}] could not set its switch settings on the device: {exc}",
+                level="WARNING")
+            return {}
+
+    # ---------------------------------------------------------------------------
+    # Firmware updates from Indigo (v3.20.0)
+    # ---------------------------------------------------------------------------
+
+    FIRMWARE_WAIT = 300       # seconds to wait for a device to come back updated
+
+    def _firmware_candidates(self):
+        """One device per physical Shelly (channels share a box), mains only."""
+        seen, out = set(), []
+        for dev in sorted(indigo.devices.iter("self"), key=lambda d: d.name):
+            if (not dev.enabled or dev.deviceTypeId in GATEWAY_CHILD_TYPES
+                    or dev.deviceTypeId in PUSH_ONLY_TYPES):
+                continue
+            ip = dev.pluginProps.get("ip_address", "").strip()
+            if not ip or ip in seen:
+                continue
+            seen.add(ip)
+            out.append(dev)
+        return out
+
+    def _switch_outputs(self, ip):
+        """{switch id: output} for every switch on the Shelly, or {}."""
+        try:
+            resp = self._rget(f"http://{ip}/rpc/Shelly.GetStatus")
+            data = resp.json() or {}
+        except Exception:
+            return {}
+        out = {}
+        for key, val in data.items():
+            if key.startswith("switch:") and isinstance(val, dict) and "output" in val:
+                out[int(key.split(":")[1])] = bool(val["output"])
+        return out
+
+    def _update_firmware(self, dev):
+        """Install the stable update on one device. Returns a sentence."""
+        if as_bool(dev.pluginProps.get("hold_firmware"), False):
+            return f"{dev.name} is held, so it was left alone"
+        ip = self._target_ip(dev)
+        if not ip:
+            return f"{dev.name} could not be reached"
+        try:
+            info = self._rget(f"http://{ip}/rpc/Shelly.CheckForUpdate").json() or {}
+            target = (info.get("stable") or {}).get("version")
+            if not target:
+                return f"{dev.name} is already up to date"
+            before = self._switch_outputs(ip)
+            resp = self._rget(f"http://{ip}/rpc/Shelly.Update", params={"stage": "stable"})
+            resp.raise_for_status()
+            log(f"[{dev.name}] installing firmware {target}; it will restart")
+            deadline = time.time() + self.FIRMWARE_WAIT
+            ver = None
+            while time.time() < deadline:
+                time.sleep(10)
+                try:
+                    ver = (self._rget(f"http://{ip}/rpc/Shelly.GetDeviceInfo", timeout=3)
+                           .json() or {}).get("ver")
+                except Exception:
+                    continue
+                if ver == target:
+                    break
+            if ver != target:
+                return (f"{dev.name} did not come back on {target} within "
+                        f"{self.FIRMWARE_WAIT // 60} minutes")
+            after = self._switch_outputs(ip)
+            put_back = []
+            for sid, was in before.items():
+                if after.get(sid) is not None and after[sid] != was:
+                    if self._switch_set(ip, sid, was, dev.name):
+                        put_back.append(sid)
+            if put_back:
+                log(f"[{dev.name}] the restart switched it {'on' if not before[put_back[0]] else 'off'}; "
+                    f"switched it back", level="WARNING")
+            return f"{dev.name} is now on {target}"
+        except Exception as exc:
+            return f"{dev.name} could not be updated ({exc})"
+
+    def actionUpdateFirmware(self, action):
+        try:
+            dev = indigo.devices[action.deviceId]
+        except KeyError:
+            return
+        if dev.deviceTypeId in GATEWAY_CHILD_TYPES or dev.deviceTypeId in PUSH_ONLY_TYPES:
+            log(f"[{dev.name}] has no firmware of its own to update from here", level="WARNING")
+            return
+
+        def _run():
+            if not self._firmware_busy.acquire(blocking=False):
+                log("A firmware update is already running; try again when it has finished",
+                    level="WARNING")
+                return
+            try:
+                log(f"Firmware: {self._update_firmware(dev)}.")
+            finally:
+                self._firmware_busy.release()
+        threading.Thread(target=_run, daemon=True).start()
+
+    def menuUpdateFirmwareAll(self, values_dict=None, type_id=""):
+        def _run():
+            if not self._firmware_busy.acquire(blocking=False):
+                log("A firmware update is already running; try again when it has finished",
+                    level="WARNING")
+                return
+            try:
+                devs = self._firmware_candidates()
+                log(f"Updating firmware on {count_words(len(devs), 'Shelly', 'Shellys')}, "
+                    f"one at a time ...")
+                results = [self._update_firmware(dev) for dev in devs]
+                done = [r for r in results if " is now on " in r]
+                log(f"Firmware update finished: {count_words(len(done), 'device')} updated. "
+                    + " ".join(r[:1].upper() + r[1:] + "." for r in results))
+            finally:
+                self._firmware_busy.release()
+        threading.Thread(target=_run, daemon=True).start()
+        return True
+
+    # ---------------------------------------------------------------------------
+    # BLU sensors through a gateway's BTHome component (v3.20.0)
+    # ---------------------------------------------------------------------------
+
+    BLU_STALE_HOURS_DEFAULT = 12
+
+    def _blu_sensor_display(self, dev):
+        """Point the device list at a reading or at open/closed, from the
+        user's choice. Indigo reads these two props to decide the display."""
+        onoff = dev.pluginProps.get("display_kind", "value") == "onoff"
+        props = dict(dev.pluginProps)
+        if (as_bool(props.get("SupportsOnState"), False) == onoff
+                and as_bool(props.get("SupportsSensorValue"), True) == (not onoff)):
+            return
+        props["SupportsOnState"]     = onoff
+        props["SupportsSensorValue"] = not onoff
+        with self._props_lock:
+            dev.replacePluginPropsOnServer(props)
+        try:
+            indigo.devices[dev.id].stateListOrDisplayStateIdChanged()
+        except Exception:
+            pass
+
+    def _gateway_components(self, ip):
+        """Every dynamic component on a gateway, all pages."""
+        comps, offset = [], 0
+        while True:
+            resp = self._rget(f"http://{ip}/rpc/Shelly.GetComponents",
+                              params={"dynamic_only": "true", "offset": offset})
+            resp.raise_for_status()
+            data = resp.json() or {}
+            page = data.get("components", []) or []
+            comps += page
+            offset += len(page)
+            if not page or offset >= int(data.get("total", 0) or 0):
+                return comps
+
+    def _obj_name_map(self, ip, obj_ids):
+        """{obj_id: name} as the gateway itself names BTHome objects."""
+        known = self._obj_names.setdefault(ip, {})
+        kinds = self._obj_names.setdefault(f"{ip}#type", {})
+        missing = sorted({o for o in obj_ids if o not in known})
+        if missing:
+            try:
+                resp = self._rget(f"http://{ip}/rpc/BTHome.GetObjectInfos",
+                                  params={"obj_ids": json.dumps(missing)})
+                for obj in (resp.json() or {}).get("objects", []) or []:
+                    known[int(obj.get("obj_id"))] = str(obj.get("obj_name", ""))
+                    kinds[int(obj.get("obj_id"))] = str(obj.get("type", ""))
+            except Exception as exc:
+                self.logger.debug(f"BTHome object names from {ip}: {exc}")
+        return known
+
+    def _blu_sensor_readings(self, comps, bthome_id):
+        """(device status, [(obj_id, value, component id)]) for one BTHome device."""
+        dev_key = f"bthomedevice:{bthome_id}"
+        dev_comp = next((c for c in comps if c.get("key") == dev_key), None)
+        if dev_comp is None:
+            return None, []
+        addr = str((dev_comp.get("config") or {}).get("addr", "")).lower()
+        readings = []
+        for c in comps:
+            if not str(c.get("key", "")).startswith("bthomesensor:"):
+                continue
+            cfg = c.get("config") or {}
+            if str(cfg.get("addr", "")).lower() != addr:
+                continue
+            val = (c.get("status") or {}).get("value")
+            if val is None:
+                continue
+            try:
+                readings.append((int(cfg.get("obj_id")), val, int(c["key"].split(":")[1])))
+            except (TypeError, ValueError):
+                continue
+        return dev_comp.get("status") or {}, readings
+
+    def _poll_blu_sensor(self, dev):
+        # The sensor has no address or MAC of its own; its gateway does, and
+        # the gateway's own device record carries the identity check.
+        ip = dev.pluginProps.get("ip_address", "").strip()
+        if not ip:
+            return
+        bthome_id = self._pref_int(dev.pluginProps, "bthome_id", 0)
+        try:
+            comps = self._gateway_components(ip)
+        except requests.exceptions.ConnectionError:
+            self._poll_failed(dev, f"no route to gateway {ip}")
+            return
+        except requests.exceptions.Timeout:
+            self._poll_failed(dev, f"gateway {ip} timed out")
+            return
+        except Exception as exc:
+            self._poll_failed(dev, f"gateway {ip}: {exc}")
+            return
+        self.last_polled[dev.id] = time.time()
+        status, readings = self._blu_sensor_readings(comps, bthome_id)
+        if status is None:
+            log(f"[{dev.name}] the gateway at {ip} has no BTHome device {bthome_id}. "
+                f"Plugins -> Shelly Direct -> Show BLU Devices on Gateways lists them.",
+                level="WARNING")
+            self._poll_failed(dev, "not paired with that gateway")
+            return
+        names = self._obj_name_map(ip, [o for o, _v, _c in readings])
+        onoff = dev.pluginProps.get("display_kind", "value") == "onoff"
+        kv, extra = [], {}
+        for obj_id, value, _cid in readings:
+            name = names.get(obj_id, f"object{obj_id}")
+            if name == "temperature":
+                kv.append({"key": "temperature", "value": float(value), "uiValue": f"{float(value):.1f} C"})
+                if not onoff:
+                    kv.append({"key": "sensorValue", "value": float(value), "uiValue": f"{float(value):.1f} C"})
+            elif name == "humidity":
+                kv.append({"key": "humidity", "value": float(value), "uiValue": f"{float(value):.0f} %"})
+            elif name == "illuminance":
+                kv.append({"key": "illuminance", "value": float(value), "uiValue": f"{float(value):.0f} lux"})
+                if not onoff and not any(k["key"] == "sensorValue" for k in kv):
+                    kv.append({"key": "sensorValue", "value": float(value), "uiValue": f"{float(value):.0f} lux"})
+            elif name == "distance_mm":
+                kv.append({"key": "distance", "value": float(value), "uiValue": f"{float(value):.0f} mm"})
+                if not onoff and not any(k["key"] == "sensorValue" for k in kv):
+                    kv.append({"key": "sensorValue", "value": float(value), "uiValue": f"{float(value):.0f} mm"})
+            elif name == "rotation":
+                kv.append({"key": "rotation", "value": float(value)})
+            elif name == "battery":
+                kv.append({"key": "battery", "value": int(value), "uiValue": f"{int(value)}%"})
+            elif name in ("motion", "window", "door", "opening", "occupancy", "moisture"):
+                kv.append({"key": "onOffState", "value": bool(value)})
+            else:
+                extra[name or f"object{obj_id}"] = value
+        rssi = status.get("rssi")
+        if rssi is not None:
+            kv.append({"key": "rssi", "value": int(rssi)})
+        if status.get("battery") is not None and not any(k["key"] == "battery" for k in kv):
+            kv.append({"key": "battery", "value": int(status["battery"]),
+                       "uiValue": f"{int(status['battery'])}%"})
+        seen_ts = status.get("last_updated_ts")
+        if seen_ts:
+            kv.append({"key": "lastReport",
+                       "value": datetime.fromtimestamp(float(seen_ts)).strftime("%d-%m-%Y %H:%M")})
+        if not onoff:
+            kv = [k for k in kv if k["key"] != "onOffState"]
+        else:
+            kv = [k for k in kv if k["key"] != "sensorValue"]
+        if kv:
+            dev.updateStatesOnServer(kv)
+        if extra:
+            self._capture_unhandled_fields(dev, extra)
+        hours = self._pref_int(self.pluginPrefs, "battery_stale_hours", self.BLU_STALE_HOURS_DEFAULT)
+        if seen_ts and (time.time() - float(seen_ts)) > hours * 3600:
+            self._mark_offline(dev, f"no report from the sensor for over {hours} hours")
+        else:
+            self._mark_online(dev)
+
+    def menuListBluDevices(self, values_dict=None, type_id=""):
+        """Log every BTHome device each gateway knows, with its readings, so a
+        BLU button or sensor can be set up without the gateway's web page."""
+        def _run():
+            gateways = {}
+            for dev in indigo.devices.iter("self"):
+                if dev.deviceTypeId in GATEWAY_CHILD_TYPES or not dev.enabled:
+                    continue
+                ip = dev.pluginProps.get("ip_address", "").strip()
+                if ip:
+                    gateways.setdefault(ip, dev.name)
+            found = 0
+            for ip, name in sorted(gateways.items()):
+                comps = self._device_components(ip) or set()
+                if "bthome" not in comps:
+                    continue
+                try:
+                    dyn = self._gateway_components(ip)
+                except Exception as exc:
+                    log(f"[{name}] could not list its BLU devices: {exc}", level="WARNING")
+                    continue
+                devices = [c for c in dyn if str(c.get("key", "")).startswith("bthomedevice:")]
+                if not devices:
+                    log(f"[{name}] ({ip}) is a BLU gateway with nothing paired yet")
+                    continue
+                for c in devices:
+                    found += 1
+                    bid = c["key"].split(":")[1]
+                    cfg = c.get("config") or {}
+                    _st, readings = self._blu_sensor_readings(dyn, bid)
+                    names = self._obj_name_map(ip, [o for o, _v, _c in readings])
+                    what = join_names(sorted({names.get(o, str(o)) for o, _v, _c in readings}))
+                    log(f"[{name}] ({ip}) BTHome device {bid}: "
+                        f"\"{cfg.get('name') or 'unnamed'}\" {cfg.get('addr', '')}"
+                        + (f" - reports {what}" if what else ""))
+            if not found:
+                log("No BLU devices found. A Gen 3, Gen 4 or Pro Shelly pairs them from "
+                    "its own web page (Components -> Add BTHome device).")
+        threading.Thread(target=_run, daemon=True).start()
+        return True
+
     def _poll_device(self, dev):
         dispatch = {
             "shellyRelay":  self._poll_relay,
@@ -3226,6 +3996,7 @@ class Plugin(indigo.PluginBase):
             "shellyI4":     self._poll_i4,
             "shellyEM":     self._poll_em,
             "shellyRGBW":   self._poll_rgbw,
+            "shellyBluSensor": self._poll_blu_sensor,
         }
         fn = dispatch.get(dev.deviceTypeId)
         if fn:
@@ -3248,6 +4019,18 @@ class Plugin(indigo.PluginBase):
             on_state = bool(data.get("output", False))
             kv       = [{"key": "onOffState", "value": on_state}]
             mirror   = {"on": str(on_state)}
+
+            # v3.20.0: who switched it. Written only when it changes, so SQL
+            # Logger gets a row per change and not one per poll.
+            prev_on = dev.states.get("onOffState")
+            moved   = self._switch_changed.pop(dev.id, False) or (
+                prev_on is not None and bool(prev_on) != on_state)
+            who = switch_source_label(data.get("source"), data.get("tag"))
+            if who and who != dev.states.get("lastChangedBy"):
+                kv.append({"key": "lastChangedBy", "value": who})
+            if moved and who and who != "Indigo":
+                self._log_activity(f'"{dev.name}" turned {"on" if on_state else "off"} by {who}')
+                self._fire_trigger("switchedOutsideIndigo", dev.id, {"who": who})
 
             if has_pm:
                 # v3.14: instantaneous readings are written only when PRESENT —
@@ -3854,6 +4637,22 @@ class Plugin(indigo.PluginBase):
                                 allow_redirects=False, verify=False)
         return resp
 
+    # One retry for a command that could not reach the device (v3.20.0). The
+    # IoT Wi-Fi here drops a packet now and then, and "failed to send off to
+    # Sonos Left Speaker Plug" (26-09-2026 20:50) is what a single lost
+    # packet looked like. Every command sent this way is idempotent -- set on,
+    # set off, go to a position -- so sending it twice cannot do harm.
+    COMMAND_RETRY_DELAY = 1.0
+
+    def _rcommand(self, url, params=None):
+        try:
+            return self._rget(url, params=params)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            self.logger.debug(f"command to {url} failed ({type(exc).__name__}); "
+                              f"retrying once")
+            time.sleep(self.COMMAND_RETRY_DELAY)
+            return self._rget(url, params=params)
+
     def _set_output(self, dev, ip, on):
         """Dispatch on/off to the correct RPC component for this device type."""
         chan = self._pref_int(dev.pluginProps, "channel_id", 0)
@@ -3866,7 +4665,8 @@ class Plugin(indigo.PluginBase):
     def _switch_set(self, ip, channel_id, on, dev_name=""):
         on_str = "true" if on else "false"
         try:
-            resp = self._rget(f"http://{ip}/rpc/Switch.Set?id={channel_id}&on={on_str}")
+            resp = self._rcommand(f"http://{ip}/rpc/Switch.Set",
+                                  params={"id": channel_id, "on": on_str, "tag": COMMAND_TAG})
             resp.raise_for_status()
             return True
         except requests.exceptions.ConnectionError:
@@ -3885,7 +4685,7 @@ class Plugin(indigo.PluginBase):
             params = {"id": channel_id, "on": "true" if on else "false"}
             if brightness is not None:
                 params["brightness"] = brightness
-            resp = self._rget(f"http://{ip}/rpc/{component}.Set", params=params)
+            resp = self._rcommand(f"http://{ip}/rpc/{component}.Set", params=params)
             resp.raise_for_status()
             return True
         except Exception as exc:
@@ -3901,7 +4701,7 @@ class Plugin(indigo.PluginBase):
             # v3.12: honour the device's channel (multi-cover devices exist now
             # that per-channel creation covers every channel-addressable type).
             chan = self._pref_int(dev.pluginProps, "channel_id", 0)
-            resp = self._rget(f"http://{ip}/rpc/{rpc_method}?id={chan}")
+            resp = self._rcommand(f"http://{ip}/rpc/{rpc_method}", params={"id": chan})
             resp.raise_for_status()
             # Event log, NOT _log_activity: a motorised cover opening or
             # closing is the plugin moving something in the house, and this is
@@ -3948,7 +4748,7 @@ class Plugin(indigo.PluginBase):
         self.webhook_repair_fails.pop(dev.id, None)
         if not dev.states.get("deviceOnline", True):
             dev.updateStateOnServer("deviceOnline", True)
-            log(f'[{dev.name}] back online')
+            self._note_back_online(dev.name)
 
     # ---------------------------------------------------------------------------
     # Dynamic-state capture (Z2M v1.7.1 / Ecowitt v2.1 pattern)
@@ -4137,8 +4937,54 @@ class Plugin(indigo.PluginBase):
         if dev.states.get("deviceOnline", True):
             dev.updateStateOnServer("deviceOnline", False)
             if not dev.pluginProps.get("suppress_offline_alerts", False):
-                log(f'[{dev.name}] offline - {reason}', level="WARNING")
+                # v3.20.0: the trigger fires now; the log line waits a few
+                # minutes so that several devices dropping together are
+                # reported as one line about the network (_flush_presence).
+                self._offline_batch.append((time.time(), dev.name, reason))
                 self._fire_trigger("deviceWentOffline", dev.id)
+
+    # Devices stopping within this long of each other are reported together.
+    OUTAGE_WINDOW = 180
+    OUTAGE_MIN    = 3
+
+    def _note_back_online(self, name, how=""):
+        """Queue a 'back online' line. A device that dropped and came back
+        inside the window is reported once, as a short drop."""
+        for i, (_ts, oname, _reason) in enumerate(self._offline_batch):
+            if oname == name:
+                del self._offline_batch[i]
+                self._log_activity(f'[{name}] stopped answering for a minute or two, '
+                                   f'then came back{how}')
+                return
+        self._online_batch.append((time.time(), name, how))
+
+    def _flush_presence(self, now=None):
+        """Report queued offline and back-online news, grouped when several
+        devices moved together (19-09-2026: fifteen plugs 'offline' within an
+        hour, each with its own warning, when the IoT Wi-Fi dropped)."""
+        now = time.time() if now is None else now
+        if self._offline_batch and now - self._offline_batch[0][0] >= self.OUTAGE_WINDOW:
+            batch, self._offline_batch = self._offline_batch, []
+            if len(batch) >= self.OUTAGE_MIN:
+                names = [name for _ts, name, _r in batch]
+                log(f"{sentence_start(count_words(len(names), 'Shelly device'))} stopped "
+                    f"answering within three minutes of each other: {join_names(names)}. "
+                    f"When several drop together it is usually the Wi-Fi or the router "
+                    f"rather than the devices.", level="WARNING")
+                self._fire_trigger("manyDevicesOffline", 0)
+            else:
+                for _ts, name, reason in batch:
+                    log(f'[{name}] offline - {reason}', level="WARNING")
+        if self._online_batch and now - self._online_batch[0][0] >= self.OUTAGE_WINDOW:
+            batch, self._online_batch = self._online_batch, []
+            if len(batch) >= self.OUTAGE_MIN:
+                names = [name for _ts, name, _h in batch]
+                log(f"{sentence_start(count_words(len(names), 'Shelly device'))} "
+                    f"{'is' if len(names) == 1 else 'are'} answering again: "
+                    f"{join_names(names)}.")
+            else:
+                for _ts, name, how in batch:
+                    log(f'[{name}] back online{how}')
 
     def _check_online(self, dev, now):
         last = self.last_seen.get(dev.id, now)
@@ -4586,6 +5432,21 @@ class Plugin(indigo.PluginBase):
             result.append((str(dev.id), dev.name))
         return result
 
+    def getRelayDevices(self, filter="", valuesDict=None, typeId="", targetId=0):
+        """Relays, for the Switched Outside Indigo trigger."""
+        result = [("any", "Any Relay")]
+        for dev in sorted(indigo.devices.iter("self"), key=lambda d: d.name):
+            if dev.deviceTypeId == "shellyRelay":
+                result.append((str(dev.id), dev.name))
+        return result
+
+    def getVariableChoices(self, filter="", valuesDict=None, typeId="", targetId=0):
+        """Every Indigo variable, for the price source menus."""
+        result = [("", "- none -")]
+        for var in sorted(indigo.variables, key=lambda v: v.name.lower()):
+            result.append((str(var.id), var.name))
+        return result
+
     def getInputDevices(self, filter="", valuesDict=None, typeId="", targetId=0):
         """Dynamic list of devices that have physical button inputs."""
         result = [("any", "Any Device")]
@@ -4636,7 +5497,7 @@ class Plugin(indigo.PluginBase):
     def _existing_device_ips(self):
         ips = set()
         for dev in indigo.devices.iter("self"):
-            if dev.deviceTypeId in BLU_TYPES:
+            if dev.deviceTypeId in GATEWAY_CHILD_TYPES:
                 # v3.13: BLU records store their GATEWAY's IP — counting it
                 # here made the gateway Shelly itself undiscoverable.
                 continue
@@ -4649,6 +5510,8 @@ class Plugin(indigo.PluginBase):
         """Return {MAC: dev} for all plugin devices that have mac_address stored."""
         result = {}
         for dev in indigo.devices.iter("self"):
+            if dev.deviceTypeId in GATEWAY_CHILD_TYPES:
+                continue
             mac = normalise_mac(dev.pluginProps.get("mac_address", ""))
             if mac:
                 result[mac] = dev
@@ -4845,7 +5708,7 @@ class Plugin(indigo.PluginBase):
                     # replaced device at the same IP was silently misbound, and
                     # its stale stored MAC could later hijack this record.
                     ip_dev = next((d for d in indigo.devices.iter("self")
-                                   if d.deviceTypeId not in BLU_TYPES
+                                   if d.deviceTypeId not in GATEWAY_CHILD_TYPES
                                    and d.pluginProps.get("ip_address", "").strip() == ip),
                                   None)
                     if ip_dev is not None and mac_upper:
@@ -4956,7 +5819,7 @@ class Plugin(indigo.PluginBase):
         # discovery used to report only what it found.
         unseen = []
         for dev in indigo.devices.iter("self"):
-            if not dev.enabled or dev.deviceTypeId in BLU_TYPES:
+            if not dev.enabled or dev.deviceTypeId in GATEWAY_CHILD_TYPES:
                 continue
             dip = dev.pluginProps.get("ip_address", "").strip()
             if dip.startswith(f"{subnet}.") and dip not in found and dip not in skipped:
@@ -5023,7 +5886,7 @@ class Plugin(indigo.PluginBase):
                 problems.append("no discovery subnets configured")
             devs = [d for d in indigo.devices.iter("self")
                     if d.enabled and d.configured
-                    and d.deviceTypeId not in BLU_TYPES
+                    and d.deviceTypeId not in GATEWAY_CHILD_TYPES
                     and d.deviceTypeId not in PUSH_ONLY_TYPES]
             unreachable = []
             for dev in devs:
