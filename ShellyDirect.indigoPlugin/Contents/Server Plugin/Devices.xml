@@ -460,6 +460,8 @@
 	<Device type="sensor" id="shellyHT">
 		<Name>Shelly H&amp;T Sensor</Name>
 		<ConfigUI>
+			<Field id="SupportsOnState" type="checkbox" defaultValue="false" hidden="true"/>
+			<Field id="SupportsSensorValue" type="checkbox" defaultValue="true" hidden="true"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -505,6 +507,8 @@
 	<Device type="sensor" id="shellyI4">
 		<Name>Shelly Plus i4</Name>
 		<ConfigUI>
+			<Field id="SupportsOnState" type="checkbox" defaultValue="true" hidden="true"/>
+			<Field id="SupportsSensorValue" type="checkbox" defaultValue="false" hidden="true"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -578,6 +582,8 @@
 	<Device type="sensor" id="shellySmoke">
 		<Name>Shelly Smoke Detector</Name>
 		<ConfigUI>
+			<Field id="SupportsOnState" type="checkbox" defaultValue="true" hidden="true"/>
+			<Field id="SupportsSensorValue" type="checkbox" defaultValue="false" hidden="true"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -609,6 +615,8 @@
 	<Device type="sensor" id="shellyFlood">
 		<Name>Shelly Flood Sensor</Name>
 		<ConfigUI>
+			<Field id="SupportsOnState" type="checkbox" defaultValue="true" hidden="true"/>
+			<Field id="SupportsSensorValue" type="checkbox" defaultValue="false" hidden="true"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -621,11 +629,6 @@
 			</Field>
 		</ConfigUI>
 		<States>
-			<State id="temperature">
-				<ValueType>Float</ValueType>
-				<TriggerLabel>Temperature (C)</TriggerLabel>
-				<ControlPageLabel>Temperature</ControlPageLabel>
-			</State>
 			<State id="batteryPct">
 				<ValueType>Integer</ValueType>
 				<TriggerLabel>Battery (%)</TriggerLabel>
@@ -646,6 +649,8 @@
 	<Device type="sensor" id="shellyEM">
 		<Name>Shelly Energy Meter</Name>
 		<ConfigUI>
+			<Field id="SupportsOnState" type="checkbox" defaultValue="false" hidden="true"/>
+			<Field id="SupportsSensorValue" type="checkbox" defaultValue="true" hidden="true"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>

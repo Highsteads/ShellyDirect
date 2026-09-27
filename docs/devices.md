@@ -90,10 +90,11 @@ A colour light strip or lamp on a Plus RGBW PM. It answers the same commands as 
 
 ## Shelly Energy Meter
 
-A meter that clamps round a cable. It measures, it does not switch.
+A meter that clamps round a cable. It measures, it does not switch. The device list shows the total power it is measuring, in watts.
 
 | Shown as | What it means |
 |---|---|
+| **Sensor value** | The total power, in watts — all three phases added together on a 3-phase meter, or the one clamp on a single-phase meter. A trigger can watch it. |
 | **Voltage Phase A, B, C (V)** | The voltage on each phase. |
 | **Current Phase A, B, C (A)** | The current on each phase. |
 | **Active Power Phase A, B, C (W)** | The power on each phase. |
@@ -119,26 +120,39 @@ The i4 has four inputs for switches or buttons, and no outputs.
 
 | Shown as | What it means |
 |---|---|
-| **Input 1 State**, **Input 2 State**, **Input 3 State** | Whether each of those inputs is on. |
+| **On / Off** | Whether the first input, input 0, is on. This is what the device list shows. |
+| **Input 1 State**, **Input 2 State**, **Input 3 State** | Whether each of the other three inputs is on. |
 
-The first input, input 0, has no state of its own in Indigo, but a press on it runs the **Button Input Pressed** trigger like the other three.
+A press on any of the four runs the **Button Input Pressed** trigger.
 
 ## Shelly H&T Sensor
 
-A battery temperature and humidity sensor. It sleeps between readings and sends each change to Indigo when it wakes, so the plugin never asks it anything.
+A battery temperature and humidity sensor. It sleeps between readings and sends each change to Indigo when it wakes, so the plugin never asks it anything. The device list shows the temperature.
 
 | Shown as | What it means |
 |---|---|
 | **Temperature (C)** | The temperature it last sent. |
 | **Humidity (%)** | The humidity it last sent. |
+| **Battery (%)** | How much charge is left, sent along with every reading. |
 
 ## Shelly Smoke Detector and Shelly Flood Sensor
 
-Battery sensors that tell Indigo when the alarm starts and when it stops. When smoke or water is detected, the Event Log says so. If you tick **Mirror States to Variables**, a variable in the **ShellyDirect** folder holds the alarm as True or False, which a trigger can watch.
+Battery sensors that tell Indigo when the alarm starts and when it stops. When smoke or water is detected, the Event Log says so.
+
+| Shown as | What it means |
+|---|---|
+| **On / Off** | On while the alarm is going off, off once it has stopped. This is what the device list shows, and a trigger can watch it. |
+| **Battery (%)** | How much charge is left, sent along with every alarm and all-clear. |
+
+If you tick **Mirror States to Variables**, a variable in the **ShellyDirect** folder holds the alarm as True or False as well.
+
+Shelly's flood sensors have no thermometer, so the Flood Sensor has no temperature reading.
 
 ## Battery sensors and Device Online
 
 The H&T, Smoke and Flood only speak when something changes, so they are not marked offline until nothing has been heard from them for 12 hours. You can change that in the plugin's **Battery Sensor Stale Threshold** setting.
+
+Their battery level arrives with each message, so on a Smoke or Flood that has never gone off it stays blank until the first alarm or all-clear. If you set a sensor up before version 4.3.0, press its button to wake it and choose **Plugins → Shelly Direct → Reconfigure Webhooks (All Devices)**, so it starts sending its battery level.
 
 ## Shelly BLU buttons and sensors
 

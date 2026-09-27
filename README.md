@@ -2,7 +2,7 @@
 
 **Control and watch the Shelly Plus, Pro, Gen 3 and Gen 4 range from Indigo, straight over your home network.**
 
-**Version:** 4.2.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
+**Version:** 4.3.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
 
 **[Read the full guide](https://highsteads.github.io/ShellyDirect/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -55,11 +55,11 @@ Battery sensors sleep, so discovery usually misses them. Add those by hand with 
 
 ## What's new
 
+**v4.3.0** — The smoke and flood alarms, the i4's first input and the energy meter's total power now show in Indigo, and the H&T, Smoke and Flood report their battery. A new **Accept Replaced Shellys** menu item lets a device take on a Shelly you have swapped for a new one. A plug with a High Power Alert no longer reports a false problem when a reading comes without a power figure. BLU buttons no longer write a reading that went nowhere on every press.
+
 **v4.2.0** — A new **Set Firmware Hold** action ticks or unticks **Hold Firmware** on a device, so it can be changed from a schedule or a script as well as the device dialog.
 
 **v4.1.0** — Two new menu items, **Show Electricity Price on All Plugs** and **Stop Showing Electricity Price on Plugs**, set the price light on every plug with an LED ring at once. The LED ring, colour and switch-settings commands now work, and "- none -" in the price menus really means none.
-
-**v4.0.0** — A live connection to every Shelly, so each change and button press reaches Indigo the moment it happens. Checking drops to every five minutes while the connection is up, and power is still written at most every 30 seconds, so SQL Logger gets no more history than before. It is not used while a Shelly password is set, and a tick box turns it off.
 
 Every version is listed in the [version history](https://highsteads.github.io/ShellyDirect/changelog.html).
 

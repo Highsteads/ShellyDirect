@@ -7,6 +7,19 @@ nav_order: 15
 
 The newest version is at the top.
 
+## 4.3.0 — 27 September 2026
+
+Writing the guide turned up a few things that did not work as they should, and this version puts them right.
+
+- **The smoke and flood alarms show in Indigo.** The alarm now turns the device on while it is going off and off once it has stopped, so the device list shows it and a trigger can watch it. Before this the alarm only reached the Event Log and the mirrored variable.
+- **The i4's first input shows in Indigo**, as the device's own on or off, alongside the other three inputs.
+- **The energy meter shows its total power**, in the device list and for a trigger to watch.
+- **The H&T, Smoke and Flood report their battery.** It comes with every reading, alarm and all-clear. A sensor set up before this version needs waking with its button and a **Reconfigure Webhooks (All Devices)** to start sending it.
+- **The Flood Sensor no longer has a temperature reading.** Shelly's flood sensors have no thermometer, so it was always blank.
+- **Accept Replaced Shellys**, a new menu item, lets a device take on a Shelly you have swapped for a new one at the same address, keeping its name, triggers and control pages. The log used to tell you to clear the old Shelly's number in the device dialog, which has no such box, so the only way out was to delete the device and start again.
+- **BLU buttons no longer write a reading that went nowhere.** Each press used to set a value the button does not have. The press is still shown in **Last Action** and **Press Count**, and still runs the **BLU Button Pressed** trigger.
+- **High Power Alert no longer trips over a missing reading.** When a plug's answer came without a power figure, its regular check failed and the log reported a problem with the plug. Now the alert just waits for the next reading.
+
 ## 4.2.0 — 26 September 2026
 
 A new **Set Firmware Hold** action ticks or unticks **Hold Firmware** on a device, so it can be changed from a schedule or a script as well as the device dialog.

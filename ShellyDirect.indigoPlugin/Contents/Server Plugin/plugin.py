@@ -3,9 +3,20 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.2.0)
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.0)
 # Date:        27-09-2026
-# Version:     4.2.0
+# Version:     4.3.0
+#
+# v4.3.0 (27-09-2026): faults found writing the guide. Sensor types get the
+# native state they report through (SupportsOnState / SupportsSensorValue, set
+# in deviceStartComm): smoke and flood alarms and the i4's input 0 now land on
+# onOffState, the H&T's temperature and the energy meter's total power on
+# sensorValue. Sensor webhooks carry the battery via a status token (older
+# hooks updated in place); the Flood's temperature state went (no Gen 2+ flood
+# has a thermometer). New menu Accept Replaced Shellys, which the wrong-device
+# messages now name (they pointed at a MAC field the dialog does not have).
+# High Power Alert skips a reading with no power figure. BLU Button / RC4
+# presses no longer write a dead sensorValue (lastAction carries the press).
 #
 # v4.2.0 (27-09-2026): Set Firmware Hold action -- ticks or unticks Hold
 # Firmware on a device from a script, schedule or another plugin.
@@ -1309,6 +1320,55 @@ LIGHT_TYPES     = {"shellyDimmer", "shellyRGBW"}
 # Device types that have physical button inputs
 INPUT_TYPES     = {"shellyRelay", "shellyUni", "shellyI4"}
 
+# v4.3.0: the native state each plugin sensor type reports through. Indigo only
+# gives a sensor device `sensorValue` when its SupportsSensorValue prop is True,
+# and `onOffState` when SupportsOnState is True. These types set neither, so the
+# smoke and flood alarms, the i4's first input and the energy meter's total
+# power were written to states the devices did not have, and never appeared.
+# (shellyBluSensor sets its own pair from the user's display choice.)
+SENSOR_NATIVE_KIND = {
+    "shellyHT":    "value",   # temperature
+    "shellyEM":    "value",   # total power
+    "shellySmoke": "onoff",   # smoke alarm
+    "shellyFlood": "onoff",   # flood alarm
+    "shellyI4":    "onoff",   # input 1
+}
+
+
+def sensor_supports_props(type_id):
+    """The Supports* props a sensor type needs, or None for any other type."""
+    kind = SENSOR_NATIVE_KIND.get(type_id)
+    if kind is None:
+        return None
+    onoff = kind == "onoff"
+    return {"SupportsOnState": onoff, "SupportsSensorValue": not onoff}
+
+
+# v4.3.0: battery sensors report their charge only through the DevicePower
+# component, which no sensor event carries. A webhook URL may read any status
+# field in a ${...} token (Shelly Webhook docs, "URL token replacement"), so
+# every sensor hook carries the battery too. A token the device cannot
+# evaluate is sent verbatim, and _qp_float ignores it.
+BATTERY_TOKEN = '${status["devicepower:0"].battery.percent}'
+
+
+def sensor_hook_urls(type_id, base):
+    """The (event, url) webhooks a battery sensor needs, [] for other types.
+
+    No Gen 2+ flood sensor has a thermometer (Shelly's device pages list only
+    DevicePower and Flood), so the flood hooks carry no temperature."""
+    bat = f"&battery={BATTERY_TOKEN}"
+    if type_id == "shellyHT":
+        return [("temperature.change", f"{base}&type=ht&tC=${{ev.tC}}{bat}"),
+                ("humidity.change",    f"{base}&type=ht&humidity=${{ev.rh}}{bat}")]
+    if type_id == "shellySmoke":
+        return [("smoke.alarm",     f"{base}&type=smoke&alarm=true{bat}"),
+                ("smoke.alarm_off", f"{base}&type=smoke&alarm=false{bat}")]
+    if type_id == "shellyFlood":
+        return [("flood.alarm",     f"{base}&type=flood&flood=true{bat}"),
+                ("flood.alarm_off", f"{base}&type=flood&flood=false{bat}")]
+    return []
+
 
 def detect_shelly_devices(device_info, config_keys):
     """Classify a Shelly Gen2+ device into the Indigo device(s) it maps to —
@@ -1632,6 +1692,9 @@ class Plugin(indigo.PluginBase):
 
     def deviceStartComm(self, dev):
         self.logger.debug(f"deviceStartComm: {dev.name} ({dev.deviceTypeId})")
+        # v4.3.0: give a sensor the native state it reports through, first, so
+        # the refresh below brings it into being.
+        dev = self._sensor_display(dev)
         # Refresh state list so any new states added in Devices.xml are available
         dev.stateListOrDisplayStateIdChanged()
         self.last_polled[dev.id] = 0
@@ -2227,6 +2290,61 @@ class Plugin(indigo.PluginBase):
         log(f"Webhook reconfiguration complete ({count} device(s))")
         return True
 
+    def menuAcceptReplaced(self, values_dict=None, type_id=""):
+        # v4.3.0: network I/O off the menu callback thread
+        threading.Thread(target=self._menu_accept_replaced_body, daemon=True).start()
+        return True
+
+    def _menu_accept_replaced_body(self):
+        """Adopt the MAC now answering for each device flagged as the wrong
+        device -- for a Shelly swapped for a new one at the same address.
+
+        The only way out of that state used to be deleting the device, because
+        the message pointed at a MAC field the dialog does not have. Each
+        acceptance is checked first: the new box must still be the one
+        answering, and the old one must not be on the network somewhere else
+        (then the device has moved, which the plugin follows by itself)."""
+        accepted, moved, unconfirmed = [], [], []
+        for dev_id, found in list(self._identity_bad.items()):
+            try:
+                dev = indigo.devices[dev_id]
+            except KeyError:
+                self._identity_bad.pop(dev_id, None)
+                continue
+            found = normalise_mac(found)
+            ip    = dev.pluginProps.get("ip_address", "").strip()
+            if not found or normalise_mac(self._read_device_mac(ip)) != found:
+                unconfirmed.append(dev.name)
+                continue
+            old = normalise_mac(dev.pluginProps.get("mac_address", ""))
+            if old and self._mdns_lookup(old):
+                moved.append(dev.name)
+                continue
+            with self._props_lock:
+                props = dict(dev.pluginProps)
+                props["mac_address"] = found
+                dev.replacePluginPropsOnServer(props)
+            self._identity_cleared(dev)
+            self._mac_verified[dev.id] = time.time()
+            self.last_polled[dev.id]   = 0
+            threading.Thread(target=self._configure_webhooks,
+                             args=(indigo.devices[dev.id],), daemon=True).start()
+            accepted.append(f"{dev.name} (now {found})")
+        if accepted:
+            log("Accepted the replaced Shelly for " + join_names(accepted) + ".")
+        if moved:
+            log(f"Not accepted for {join_names(moved)}: the original Shelly is still "
+                f"on the network at another address, so the device has moved "
+                f"rather than been replaced. The plugin will follow it by itself.",
+                level="WARNING")
+        if unconfirmed:
+            log(f"Not accepted for {join_names(unconfirmed)}: the new Shelly did not "
+                f"answer just now. Make sure it is powered and try again.",
+                level="WARNING")
+        if not (accepted or moved or unconfirmed):
+            log("No device is waiting for a replaced Shelly to be accepted.")
+        return True
+
     def menuDeviceHealthSummary(self, values_dict=None, type_id=""):
         # v3.15: serial network I/O off the menu callback thread
         threading.Thread(target=self._menu_health_summary_body, daemon=True).start()
@@ -2407,13 +2525,14 @@ class Plugin(indigo.PluginBase):
             })
 
         elif ev_type == "input" and state in ("on", "off"):
-            # v3.13: the Uni declares input0/input1 custom states — its
-            # sensorValue write was dead (relay-class device). Keep the
-            # sensorValue special-case only for the i4 (deferred Supports* work).
+            # v3.13: the Uni declares input0/input1 custom states. v4.3.0: the
+            # i4's first input is its native onOffState (SupportsOnState, see
+            # SENSOR_NATIVE_KIND) -- it was written to a sensorValue the device
+            # did not have.
             if target.deviceTypeId == "shellyUni":
                 key = f"input{input_id}"
             else:
-                key = "sensorValue" if input_id == 0 else f"input{input_id}"
+                key = "onOffState" if input_id == 0 else f"input{input_id}"
             target.updateStateOnServer(key, state == "on")
             self._log_activity(f'[webhook] "{target.name}" input{input_id} -> {state}')
 
@@ -2440,8 +2559,8 @@ class Plugin(indigo.PluginBase):
             if temp is not None:
                 kv.append({"key": "sensorValue", "value": temp,
                            "uiValue": f"{temp:.1f} C"})
-                # v3.14: also the declared temperature state — sensorValue is
-                # dead on sensor types until the Supports* completion lands.
+                # v3.14: also the declared temperature state. v4.3.0: the
+                # sensorValue now exists too (SupportsSensorValue).
                 kv.append({"key": "temperature", "value": temp,
                            "uiValue": f"{temp:.1f} C"})
                 mirror["temp_c"] = f"{temp:.1f}"
@@ -2462,9 +2581,11 @@ class Plugin(indigo.PluginBase):
         elif ev_type == "smoke":
             alarm = self._qp(params, "alarm", "false").lower() == "true"
             bat   = self._qp_float(params, "battery")
-            kv    = [{"key": "sensorValue", "value": alarm}]
+            # v4.3.0: the alarm is the native onOffState (SupportsOnState).
+            kv    = [{"key": "onOffState", "value": alarm}]
             if bat is not None:
-                kv.append({"key": "batteryPct", "value": int(bat)})
+                kv.append({"key": "batteryPct", "value": int(bat),
+                           "uiValue": f"{int(bat)}%"})
             target.updateStatesOnServer(kv)
             self._mirror_states(target, {"alarm": str(alarm)})
             line = f'[webhook] "{target.name}" smoke: alarm={alarm}  bat={bat}%'
@@ -2475,14 +2596,13 @@ class Plugin(indigo.PluginBase):
 
         elif ev_type == "flood":
             flood = self._qp(params, "flood", "false").lower() == "true"
-            temp  = self._qp_float(params, "tC")
             bat   = self._qp_float(params, "battery")
-            kv    = [{"key": "sensorValue", "value": flood}]
-            if temp is not None:
-                kv.append({"key": "temperature", "value": temp,
-                           "uiValue": f"{temp:.1f} C"})
+            # v4.3.0: the alarm is the native onOffState (SupportsOnState). The
+            # temperature went: no Gen 2+ flood sensor has a thermometer.
+            kv    = [{"key": "onOffState", "value": flood}]
             if bat is not None:
-                kv.append({"key": "batteryPct", "value": int(bat)})
+                kv.append({"key": "batteryPct", "value": int(bat),
+                           "uiValue": f"{int(bat)}%"})
             target.updateStatesOnServer(kv)
             self._mirror_states(target, {"flood": str(flood)})
             line = f'[webhook] "{target.name}" flood: flood={flood}  bat={bat}%'
@@ -2898,30 +3018,15 @@ class Plugin(indigo.PluginBase):
         if wanted is not None:
             self._ensure_webhooks(ip, dev, wanted, inputs_verified=inputs_verified)
 
-        elif type_id == "shellyHT":
-            # v3.13: real Gen2+ webhook macros are ${ev.*} — the old
-            # {temperature}-style tokens were never substituted, so the handler
-            # received literal '{temperature}' strings (and 'alarm.on' /
-            # 'flood.detected' below were not real event names). Battery has no
-            # event token; it arrives with the device's periodic wake report.
+        elif type_id in PUSH_ONLY_TYPES:
+            # v3.13: real Gen2+ webhook macros are ${ev.*} (the old {temperature}
+            # tokens were never substituted). v4.3.0: every hook also carries
+            # the battery through a status token -- no event reports it, so the
+            # Battery state never had a value. See sensor_hook_urls.
             # NB: per API docs — no battery sensor hardware in the fleet to
             # live-verify; the handler tolerates unsubstituted tokens either way.
-            self._setup_sensor_webhook(ip, dev, f"{base}&type=ht&tC=${{ev.tC}}",
-                                       "temperature.change")
-            self._setup_sensor_webhook(ip, dev, f"{base}&type=ht&humidity=${{ev.rh}}",
-                                       "humidity.change")
-
-        elif type_id == "shellySmoke":
-            self._setup_sensor_webhook(ip, dev, f"{base}&type=smoke&alarm=true",
-                                       "smoke.alarm")
-            self._setup_sensor_webhook(ip, dev, f"{base}&type=smoke&alarm=false",
-                                       "smoke.alarm_off")
-
-        elif type_id == "shellyFlood":
-            self._setup_sensor_webhook(ip, dev, f"{base}&type=flood&flood=true",
-                                       "flood.alarm")
-            self._setup_sensor_webhook(ip, dev, f"{base}&type=flood&flood=false",
-                                       "flood.alarm_off")
+            for event, url in sensor_hook_urls(type_id, base):
+                self._setup_sensor_webhook(ip, dev, url, event)
 
         elif type_id in BLU_TYPES:
             # BLU devices: webhooks registered on the BLE gateway device's IP.
@@ -3155,12 +3260,24 @@ class Plugin(indigo.PluginBase):
                 lresp = self._rget(f"http://{ip}/rpc/Webhook.List")
                 if lresp.status_code == 200:
                     for hook in (lresp.json() or {}).get("hooks", []):
-                        if hook.get("event") == event and any(
-                                hook_dev_id(u) == dev.id
-                                for u in hook.get("urls", [])):
+                        urls = hook.get("urls", [])
+                        if hook.get("event") != event or not any(
+                                hook_dev_id(u) == dev.id for u in urls):
+                            continue
+                        if urls == [url_template]:
                             self.logger.debug(
                                 f'[{dev.name}] {event} webhook already present')
                             return
+                        # v4.3.0: ours, but an older URL (before the battery
+                        # token) -- bring it up to date rather than leave the
+                        # sensor on the old one for ever.
+                        uresp = self._rget(
+                            f"http://{ip}/rpc/Webhook.Update",
+                            params={"id": hook.get("id"),
+                                    "urls": qjson([url_template])})
+                        uresp.raise_for_status()
+                        log(f'[{dev.name}] Sensor webhook updated for {event}')
+                        return
             except Exception:
                 pass   # sleeping sensor — fall through to the Create attempt
             resp = self._rget(
@@ -3390,8 +3507,11 @@ class Plugin(indigo.PluginBase):
             dev.updateStateOnServer("deviceOnline", True)
             self._note_back_online(dev.name, " (BLU webhook)")
 
+        # v4.3.0: the press is carried by lastAction / pressCount and the
+        # bluButtonPress trigger. The sensorValue True written here went
+        # nowhere (no SupportsSensorValue), and a value that is always True
+        # would say nothing if it did, so it is gone.
         kv = [
-            {"key": "sensorValue", "value": True},
             {"key": "lastAction",  "value": event},
             {"key": "pressCount",  "value": int(dev.states.get("pressCount", 0)) + 1},
         ]
@@ -3637,7 +3757,9 @@ class Plugin(indigo.PluginBase):
         self._identity_warned.add(key)
         log(f"[{dev.name}] wrong device at {ip} - expected MAC {stored_mac}, found "
             f"{found_mac or '(unreadable)'}. Nothing will be recorded for this device "
-            f"until it is found again by MAC. Check whether its address has changed.",
+            f"until it is found again by MAC. Check whether its address has changed. "
+            f"If the Shelly was replaced with a new one, use Plugins -> Shelly Direct "
+            f"-> Accept Replaced Shellys.",
             level="WARNING")
 
     def _resolve_by_mac(self, dev):
@@ -4085,6 +4207,28 @@ class Plugin(indigo.PluginBase):
     # ---------------------------------------------------------------------------
 
     BLU_STALE_HOURS_DEFAULT = 12
+
+    def _sensor_display(self, dev):
+        """Set SupportsSensorValue / SupportsOnState on a sensor type that
+        reports through a native state (v4.3.0, see SENSOR_NATIVE_KIND), and
+        return the device re-fetched so the caller sees the new props.
+
+        Not a restart prop (RESTART_PROPS), so the write does not bounce the
+        device. A failure leaves the device as it was and says why in debug."""
+        wanted = sensor_supports_props(dev.deviceTypeId)
+        if wanted is None:
+            return dev
+        props = dict(dev.pluginProps)
+        if all(as_bool(props.get(k), not v) == v for k, v in wanted.items()):
+            return dev
+        props.update(wanted)
+        try:
+            with self._props_lock:
+                dev.replacePluginPropsOnServer(props)
+            dev = indigo.devices[dev.id]
+        except Exception as exc:
+            self.logger.debug(f"[{dev.name}] could not set its display state: {exc}")
+        return dev
 
     def _blu_sensor_display(self, dev):
         """Point the device list at a reading or at open/closed, from the
@@ -4800,7 +4944,8 @@ class Plugin(indigo.PluginBase):
                         resp.raise_for_status()   # no inputs at all IS an error
                     break
                 val = bool(resp.json().get("state") or False)
-                key = "sensorValue" if i == 0 else f"input{i}"
+                # v4.3.0: input 1 is the native onOffState (SupportsOnState).
+                key = "onOffState" if i == 0 else f"input{i}"
                 kv.append({"key": key, "value": val})
                 mirror[f"input{i}"] = str(val)
 
@@ -5823,7 +5968,13 @@ class Plugin(indigo.PluginBase):
     # ---------------------------------------------------------------------------
 
     def _check_power_alert(self, dev, watts):
-        """Fire highPowerAlert trigger and log if watts exceeds per-device threshold."""
+        """Fire highPowerAlert trigger and log if watts exceeds per-device threshold.
+
+        v4.3.0: a reading with no power figure (a partial answer, or a live
+        update that did not include it) leaves the alert as it was. Comparing
+        None with the threshold raised, and the device got a poll error."""
+        if watts is None:
+            return
         if not dev.pluginProps.get("power_alert_enabled", False):
             return
         try:
@@ -6178,12 +6329,15 @@ class Plugin(indigo.PluginBase):
                             # record is pointed at the wrong box — rewriting its
                             # identity would make the mistake permanent. Say so and
                             # leave it; the poll gate refuses to write meanwhile.
+                            # v4.3.0: flag it, so the poll gate stops writing now
+                            # and Accept Replaced Shellys can act on it.
+                            self._identity_bad[ip_dev.id] = mac_upper
                             log(f"[Discovery] {ip_dev.name:<30} {ip:<18} -- {mac_upper} "
                                 f"answers here, but this device is {stored}. Its stored "
                                 f"address is wrong (or the hardware was replaced). No "
                                 f"data is being recorded for it. Correct the address, or "
-                                f"clear its MAC in the device dialog if the unit really "
-                                f"was swapped.", level="WARNING")
+                                f"if the unit really was swapped use Plugins -> Shelly "
+                                f"Direct -> Accept Replaced Shellys.", level="WARNING")
                         elif not stored:
                             new_props = dict(ip_dev.pluginProps)
                             new_props["mac_address"] = mac_upper

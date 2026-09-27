@@ -11,6 +11,7 @@ These are under **Plugins → Shelly Direct**. The ones that talk to every Shell
 |---|---|
 | **Discover Shelly Devices** | Scans the ranges in **Discovery Subnets** and creates an Indigo device for each new Shelly it finds, in the **ShellyDirect** device folder. A Shelly that has moved to a new address has its device updated rather than a second one made. At the end it names any of your devices in that range that did not answer. See [Getting started](getting-started.md). |
 | **Show mDNS Discovered Shellys** | Lists every Shelly announcing itself on your network, with its MAC address, its current address and the Indigo device it matches. A device whose stored address is out of date is marked as such. |
+| **Accept Replaced Shellys** | For a Shelly you have swapped for a new one at the same address. Each device showing "wrong device at" in the log takes on the new Shelly, keeping its name, triggers and control pages. It will not do so if the new Shelly is not answering, or if the old one is still on the network at another address. See [Troubleshooting](troubleshooting.md). |
 | **Device Health Summary** | Writes a table of every device — its address, kind, whether it is online, its firmware version, and when it was last heard from. |
 | **Check Firmware Versions** | Asks every Shelly whether a firmware update is waiting, and says for each. |
 | **Update Firmware on All Devices** | Updates every Shelly in turn, skipping any with **Hold Firmware** ticked. See [Firmware updates](firmware.md). |

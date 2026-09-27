@@ -11,6 +11,11 @@
 		<CallbackMethod>menuShowMdns</CallbackMethod>
 	</MenuItem>
 
+	<MenuItem id="menuAcceptReplaced">
+		<Name>Accept Replaced Shellys</Name>
+		<CallbackMethod>menuAcceptReplaced</CallbackMethod>
+	</MenuItem>
+
 	<MenuItem id="menuDeviceHealthSummary">
 		<Name>Device Health Summary</Name>
 		<CallbackMethod>menuDeviceHealthSummary</CallbackMethod>

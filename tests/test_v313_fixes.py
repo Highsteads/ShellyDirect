@@ -120,12 +120,14 @@ def test_webhook_uni_input0_writes_input0_state(plugin_mod):
     assert "sensorValue" not in dev.states
 
 
-def test_webhook_i4_input0_keeps_sensorvalue(plugin_mod):
+def test_webhook_i4_input0_is_its_onoffstate(plugin_mod):
+    # v4.3.0: was sensorValue, a state the i4 never had (no SupportsSensorValue).
     r = _apply_receiver(plugin_mod)
     dev = FakeDev(3, "i4", type_id="shellyI4")
     plugin_mod.Plugin._apply_webhook_event(
         r, dev, _qs({"type": "input", "state": "on", "input": "0"}))
-    assert dev.states.get("sensorValue") is True
+    assert dev.states.get("onOffState") is True
+    assert "sensorValue" not in dev.states
 
 
 def test_webhook_ht_bad_field_skips_only_that_field(plugin_mod):
@@ -153,7 +155,9 @@ def test_webhook_smoke_alarm(plugin_mod):
     dev = FakeDev(6, "Smoke", type_id="shellySmoke")
     plugin_mod.Plugin._apply_webhook_event(
         r, dev, _qs({"type": "smoke", "alarm": "true"}))
-    assert dev.states["sensorValue"] is True
+    # v4.3.0: was sensorValue, a state the smoke alarm never had.
+    assert dev.states["onOffState"] is True
+    assert "sensorValue" not in dev.states
 
 
 def test_qp_float_token_tolerance(plugin_mod):
