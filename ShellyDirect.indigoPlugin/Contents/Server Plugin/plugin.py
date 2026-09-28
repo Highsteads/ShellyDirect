@@ -3,9 +3,14 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.0)
-# Date:        27-09-2026
-# Version:     4.3.0
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.1)
+# Date:        28-09-2026
+# Version:     4.3.1
+#
+# v4.3.1 (28-09-2026): comments only. getRelayDevices() and _discover_thread()
+# now say why they include disabled devices, which the price-light functions
+# and _link_devices() skip: a picker must still show a disabled relay, and a
+# disabled record still owns its address. No change in behaviour.
 #
 # v4.3.0 (27-09-2026): faults found writing the guide. Sensor types get the
 # native state they report through (SupportsOnState / SupportsSensorValue, set
@@ -6041,6 +6046,11 @@ class Plugin(indigo.PluginBase):
 
     def getRelayDevices(self, filter="", valuesDict=None, typeId="", targetId=0):
         """Relays, for the Switched Outside Indigo trigger."""
+        # DELIBERATELY includes disabled relays, unlike _update_price_light()
+        # and _set_price_light_all(). This is a picker: a trigger set up on a
+        # relay that is disabled for now must still show its relay, or its
+        # dialog goes blank. The two price-light functions send commands, so
+        # they rightly skip what is disabled.
         result = [("any", "Any Relay")]
         for dev in sorted(indigo.devices.iter("self"), key=lambda d: d.name):
             if dev.deviceTypeId == "shellyRelay":
@@ -6317,6 +6327,10 @@ class Plugin(indigo.PluginBase):
                     # v3.13: verify the LIVE MAC against the stored one — a
                     # replaced device at the same IP was silently misbound, and
                     # its stale stored MAC could later hijack this record.
+                    # DELIBERATELY no enabled/configured guard, unlike
+                    # _link_devices(): a disabled record still owns its address,
+                    # and missing it here would bind a replaced box to the wrong
+                    # record or create a duplicate.
                     ip_dev = next((d for d in indigo.devices.iter("self")
                                    if d.deviceTypeId not in GATEWAY_CHILD_TYPES
                                    and d.pluginProps.get("ip_address", "").strip() == ip),

@@ -7,6 +7,10 @@ nav_order: 15
 
 The newest version is at the top.
 
+## 4.3.1 — 28 September 2026
+
+No change to how the plugin works. Two notes in the code now explain why the relay list for the Switched Outside Indigo trigger, and discovery, include disabled devices.
+
 ## 4.3.0 — 27 September 2026
 
 Writing the guide turned up a few things that did not work as they should, and this version puts them right.
