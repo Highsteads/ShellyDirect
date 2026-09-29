@@ -9,7 +9,7 @@ The newest version is at the top.
 
 ## 4.3.2 — 29 September 2026
 
-Fewer false alarms at midnight. Just after midnight five or six plugs a night logged "cumulative energy went backwards" when their first reading came in a fraction of a watt-hour below the new day's starting point, because that reading was a few seconds older than the one taken at midnight. A drop that small now simply means no energy used yet. A real counter reset, which falls much further, is still checked twice before it is believed, as before. The energy figures themselves were never affected.
+Fewer false alarms at midnight. Just after midnight five or six plugs a night logged "cumulative energy went backwards" when their first reading came in a fraction of a watt-hour below the new day's starting point, because that reading was slightly older than the one taken at midnight. A drop that small now simply means no energy used yet. A real counter reset, which falls much further, is still checked twice before it is believed, as before. The energy figures themselves were never affected.
 
 ## 4.3.1 — 28 September 2026
 
