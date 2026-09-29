@@ -55,7 +55,7 @@ Battery sensors sleep, so discovery usually misses them. Add those by hand with 
 
 ## What's new
 
-**v4.3.2** — Fewer false alarms at midnight. Plugs no longer log "cumulative energy went backwards" when the first reading after midnight comes in a fraction of a watt-hour below the new day's starting point. Energy figures were never wrong; the warning was.
+**v4.3.2** — Fewer false alarms at midnight. Plugs no longer log "cumulative energy went backwards" when the first reading after midnight comes in a fraction of a watt-hour below the new day's starting point. The energy figures were never wrong, only the warning.
 
 **v4.3.1** — No change to how the plugin works. Two notes in the code now explain why the relay list for the Switched Outside Indigo trigger, and discovery, include disabled devices.
 
