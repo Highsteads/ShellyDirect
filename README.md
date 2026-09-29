@@ -2,7 +2,7 @@
 
 **Control and watch the Shelly Plus, Pro, Gen 3 and Gen 4 range from Indigo, straight over your home network.**
 
-**Version:** 4.3.1 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
+**Version:** 4.3.2 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
 
 **[Read the full guide](https://highsteads.github.io/ShellyDirect/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -54,6 +54,8 @@ For the older Gen 1 Shellys, such as the original Shelly 1, use my other plugin,
 Battery sensors sleep, so discovery usually misses them. Add those by hand with **New Device**. The [full guide](https://highsteads.github.io/ShellyDirect/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v4.3.2** — Fewer false alarms at midnight. Plugs no longer log "cumulative energy went backwards" when the first reading after midnight comes in a fraction of a watt-hour below the new day's starting point. Energy figures were never wrong; the warning was.
 
 **v4.3.1** — No change to how the plugin works. Two notes in the code now explain why the relay list for the Switched Outside Indigo trigger, and discovery, include disabled devices.
 

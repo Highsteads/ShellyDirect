@@ -3,9 +3,18 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.1)
-# Date:        28-09-2026
-# Version:     4.3.1
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2)
+# Date:        29-09-2026
+# Version:     4.3.2
+#
+# v4.3.2 (29-09-2026): no more nightly "cumulative energy went backwards"
+# warnings over a fraction of a watt-hour. The midnight reset reads each plug
+# directly, while the next poll can use a slightly older status, so it came in
+# a few tenths of a Wh below the new baseline and started the two-strike
+# counter-reset rule on five or six plugs a night (one a night reached the
+# second strike, re-baselined and then undid it). A reading within
+# ENERGY_JITTER_WH of the baseline is now just "no energy used yet"; only a
+# larger drop counts as a suspected reset.
 #
 # v4.3.1 (28-09-2026): comments only. getRelayDevices() and _discover_thread()
 # now say why they include disabled devices, which the price-light functions
@@ -631,6 +640,14 @@ HISTORY_DAYS = 30     # Rolling daily energy history retained per device
 STALE_BANK_MAX_DAYS = 2   # Don't bank an in-place day rollover as history if the
                           # baseline is older than this — a device offline for weeks
                           # would otherwise write months of kWh as one day's row.
+ENERGY_JITTER_WH = 50.0   # v4.3.2: a reading this close BELOW the day baseline is
+                          # an older status, not a counter reset. The midnight reset
+                          # reads the plug directly; the next poll can use a status
+                          # a little older than that, so it lands a few tenths of a
+                          # Wh below (measured 27-29 Sep: 0.0-0.5 Wh on 5-6 plugs a
+                          # night). 50 Wh is a minute of a 3 kW load. A real reset
+                          # or a phantom zero falls much further and still gets two
+                          # strikes.
 
 # Webhook repair backoff: after this many consecutive health-check repairs that
 # fail to "stick" (device unreachable mid-write, or a duplicate record clobbering
@@ -5702,7 +5719,8 @@ class Plugin(indigo.PluginBase):
                         level="WARNING")
 
             have_baseline = "day_baseline_wh" in entry
-            is_low        = have_baseline and total_wh < entry.get("day_baseline_wh", 0)
+            is_low        = (have_baseline and
+                             total_wh < entry.get("day_baseline_wh", 0) - ENERGY_JITTER_WH)
             if is_low:
                 pending = entry.get("pending_reset_wh")
                 if pending is None:
