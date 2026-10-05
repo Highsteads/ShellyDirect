@@ -7,6 +7,10 @@ nav_order: 15
 
 The newest version is at the top.
 
+## 4.3.5 — 5 October 2026
+
+**A quieter stop.** When the plugin stopped, a message from a Shelly's live connection could arrive after Indigo had already closed its own connection to the plugin. The plugin tried to write it down anyway and left a "CClientMgr not created" line in its own log. The plugin now notes that it is stopping as soon as Indigo says so, and from then on ignores anything arriving from the live connections, the Shellys' own switch and button messages, and the checks that run in the background. It also closes the live connections and waits a few seconds at most for them to finish. Nothing changes while the plugin is running.
+
 ## 4.3.4 — 5 October 2026
 
 Three faults found by an outside review are put right.

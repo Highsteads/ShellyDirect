@@ -3,9 +3,23 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2, 4.3.4); Claude Sonnet 5.5 (4.3.3)
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2, 4.3.4); Claude Sonnet 5.5 (4.3.3, 4.3.5)
 # Date:        05-10-2026
-# Version:     4.3.4
+# Version:     4.3.5
+#
+# v4.3.5 (05-10-2026): a quiet stop. While 4.3.3 shut down, two live-link
+# frames arrived after Indigo had closed its connection to the plugin and their
+# handlers logged "UnexpectedNullError -- CClientMgr not created". Indigo stops
+# the concurrent thread BEFORE shutdown() (and on a whole-server stop the IPC
+# connection may already be closing), so stop_concurrent_thread / stopConcurrentThread
+# are now overridden to raise self._stopping and stop the links, shutdown() raises
+# it again as its first act, and _on_link_message, _apply_link_updates, _poll_device,
+# _manage_links, the webhook do_GET / do_POST and the mDNS callback all return at
+# once when it is set (_is_stopping). The session loop drops a frame read after
+# stopping began. shutdown() then waits for the links with a bounded join
+# (_close_links, 3 s ceiling, time-based, no self.sleep -- the thread is already
+# stopped, so self.sleep would raise) and every step of it is guarded so nothing
+# can raise out of shutdown. tests/test_v435_shutdown_quiet.py.
 #
 # v4.3.4 (05-10-2026): three faults from an outside review. (1) Commands now
 # go through _command_ip, which refuses them only when the identity check has
@@ -1159,6 +1173,14 @@ def merge_status(cached, delta):
     return out
 
 
+def _is_stopping(obj):
+    """True once the plugin has begun to stop (v4.3.5). Indigo stops the
+    concurrent thread BEFORE shutdown() and, on a whole-server stop, may already
+    be closing the connection to the plugin, so nothing may call indigo.* after
+    this goes True. A plain bool read: safe from any thread."""
+    return getattr(obj, "_stopping", False) is True
+
+
 class ShellyLink:
     """One live websocket to one Shelly, reconnecting with back-off until stopped.
 
@@ -1181,6 +1203,11 @@ class ShellyLink:
 
     def stop(self):
         self.stop_event.set()
+
+    def join(self, timeout=None):
+        """Wait (bounded) for the session thread to leave. Never from itself."""
+        if self.thread.is_alive() and self.thread is not threading.current_thread():
+            self.thread.join(timeout)
 
     def live(self, now=None):
         now = time.time() if now is None else now
@@ -1238,6 +1265,9 @@ class ShellyLink:
                     raw = ws.recv(timeout=1.0)
                 except TimeoutError:
                     continue
+                # v4.3.5: a frame read after the plugin began stopping is dropped.
+                if self.stop_event.is_set() or _is_stopping(self.plugin):
+                    break
                 if isinstance(raw, bytes):
                     raw = raw.decode("utf-8", "replace")
                 if any(noise in raw for noise in _LINK_NOISE):
@@ -1664,6 +1694,7 @@ class Plugin(indigo.PluginBase):
         # ── v4.0.0 live connection ──────────────────────────────────────────
         self.live_connection   = as_bool(prefs.get("live_connection"), True)
         self._links            = {}   # {ip: ShellyLink}
+        self._stopping         = False   # v4.3.5: True once Indigo starts stopping us
         self._links_checked    = 0.0
         self._link_status      = {}   # {dev_id: merged component status}
         self._link_dirty       = {}   # {dev_id: ts of the first unapplied delta}
@@ -1707,17 +1738,82 @@ class Plugin(indigo.PluginBase):
         except Exception as exc:
             self.logger.debug(f"energy data prune: {exc}")
 
+    def _begin_stopping(self):
+        """Raise the stopping flag and tell every live link to leave (v4.3.5).
+
+        Called from stopConcurrentThread (Indigo stops the thread BEFORE it calls
+        shutdown) and again at the very start of shutdown. Every handler that
+        would touch indigo.* checks the flag first, so a websocket frame or a
+        webhook that arrives while Indigo closes its connection to us does
+        nothing, instead of logging "CClientMgr not created". Cannot raise."""
+        self._stopping = True
+        try:
+            for link in list(self._links.values()):
+                try:
+                    link.stop()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _note_stopping(self):
+        try:
+            self._begin_stopping()
+        except Exception:
+            pass
+
+    def stop_concurrent_thread(self):
+        self._note_stopping()
+        base = getattr(super(), "stop_concurrent_thread", None)
+        if base is not None:
+            base()
+    stopConcurrentThread = stop_concurrent_thread
+
+    def _close_links(self, ceiling=3.0, per_link=1.5):
+        """Wait for the link threads to leave: bounded, never self.sleep (Indigo
+        has stopped the thread, so self.sleep would raise here)."""
+        deadline = time.time() + ceiling
+        for link in list(self._links.values()):
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
+            try:
+                link.join(min(per_link, remaining))
+            except Exception:
+                pass
+
     def shutdown(self):
+        # v4.3.5: flag first, so nothing below or on another thread calls
+        # indigo.* on a connection Indigo may already be closing. Each step is
+        # guarded: nothing here may raise out of shutdown().
+        self._note_stopping()
         # Indigo writes its own 'Stopping plugin' and 'Stopped plugin' lines
         # around this call, so an event-log line here said it a third time.
-        self.logger.debug("Shelly Direct plugin stopping")
-        self._save_energy_data()
-        for link in list(self._links.values()):
-            link.stop()
-        self._stop_mdns()
+        try:
+            self.logger.debug("Shelly Direct plugin stopping")
+        except Exception:
+            pass
+        try:
+            self._close_links()
+        except Exception:
+            pass
+        try:
+            self._save_energy_data()
+        except Exception:
+            pass
+        try:
+            self._stop_mdns()
+        except Exception:
+            pass
         if self.webhook_server:
-            self.webhook_server.shutdown()
-            self.webhook_server.server_close()   # release the listening socket FD
+            try:
+                self.webhook_server.shutdown()
+            except Exception:
+                pass
+            try:
+                self.webhook_server.server_close()   # release the listening socket FD
+            except Exception:
+                pass
 
     # ---------------------------------------------------------------------------
     # Device lifecycle
@@ -2786,6 +2882,8 @@ class Plugin(indigo.PluginBase):
         class WebhookHandler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
                 try:
+                    if _is_stopping(plugin):       # v4.3.5: no indigo.* once stopping
+                        self.send_response(503); self.end_headers(); return
                     parsed   = urllib.parse.urlparse(self.path)
                     params   = urllib.parse.parse_qs(parsed.query)
                     dev_id   = Plugin._qp_int(params, "devId", 0)
@@ -2857,6 +2955,8 @@ class Plugin(indigo.PluginBase):
                               "event":"single_push","idx":1,"ts":1731931521.19}
                 """
                 try:
+                    if _is_stopping(plugin):       # v4.3.5: no indigo.* once stopping
+                        self.send_response(503); self.end_headers(); return
                     parsed  = urllib.parse.urlparse(self.path)
                     params  = urllib.parse.parse_qs(parsed.query)
                     dev_id  = int(params.get("devId", ["0"])[0])
@@ -3704,6 +3804,8 @@ class Plugin(indigo.PluginBase):
         Resolving the record blocks, so it is handed to a short-lived worker —
         never do network waits on the browser thread.
         """
+        if _is_stopping(self):
+            return
         try:
             from zeroconf import ServiceStateChange
             if state_change is ServiceStateChange.Removed:
@@ -4554,6 +4656,8 @@ class Plugin(indigo.PluginBase):
 
     def _manage_links(self):
         """Start a link for every Shelly that should have one, stop the rest."""
+        if _is_stopping(self):
+            return
         wanted = set()
         if self._link_capable():
             for dev in indigo.devices.iter("self"):
@@ -4606,6 +4710,8 @@ class Plugin(indigo.PluginBase):
 
     def _on_link_message(self, ip, msg):
         """Route one message from a live link (called on the link's thread)."""
+        if _is_stopping(self):
+            return
         try:
             devs = self._link_devices(ip)
             if not devs or not self._link_identity_ok(ip, msg, devs):
@@ -4673,6 +4779,8 @@ class Plugin(indigo.PluginBase):
         """Write pushed readings at most every LINK_APPLY_INTERVAL seconds per
         device. A relay is written from the merged status; other types are
         polled, since their states come from several calls."""
+        if _is_stopping(self):
+            return
         for dev_id, first in list(self._link_dirty.items()):
             if (now - self._link_applied.get(dev_id, 0)) < LINK_APPLY_INTERVAL:
                 continue
@@ -4693,6 +4801,8 @@ class Plugin(indigo.PluginBase):
                 self.logger.debug(f"[{dev.name}] pushed update not applied: {exc}")
 
     def _poll_device(self, dev):
+        if _is_stopping(self):
+            return
         dispatch = {
             "shellyRelay":  self._poll_relay,
             "shellyUni":    self._poll_uni,
