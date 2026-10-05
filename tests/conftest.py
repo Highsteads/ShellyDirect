@@ -38,7 +38,9 @@ _indigo.devices    = MagicMock()
 _indigo.variables  = MagicMock()
 _indigo.variable   = MagicMock()
 _indigo.trigger    = MagicMock()
-for _name in ("kDeviceAction", "kDimmerAction", "kSensorAction",
+# No kDimmerAction: Indigo has none (dimmer actions are kDeviceAction.*), and a
+# stub that invents one hid a dead dimmer handler for every release to 4.3.2.
+for _name in ("kDeviceAction", "kSensorAction",
               "kUniversalAction", "kStateImageSel", "kProtocol"):
     setattr(_indigo, _name, MagicMock())
 sys.modules["indigo"] = _indigo

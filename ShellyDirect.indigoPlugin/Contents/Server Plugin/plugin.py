@@ -3,9 +3,18 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2)
-# Date:        29-09-2026
-# Version:     4.3.2
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2); Claude Sonnet 5.5 (4.3.3)
+# Date:        05-10-2026
+# Version:     4.3.3
+#
+# v4.3.3 (05-10-2026): Shelly Dimmer and RGBW lights can be switched and dimmed
+# from Indigo again. actionControlDimmer compared the action against a
+# kDimmerAction enum that Indigo does not have (Indigo documents a dimmer's
+# action.deviceAction as indigo.kDeviceAction), so every On, Off, Toggle, Set
+# Brightness, Brighten By and Dim By raised AttributeError, was caught and
+# logged as "actionControlDimmer exception", and nothing reached the light.
+# All seven comparisons now use indigo.kDeviceAction. New guard test
+# tests/test_indigo_names_exist.py fails on any indigo name Indigo lacks.
 #
 # v4.3.2 (29-09-2026): no more nightly "cumulative energy went backwards"
 # warnings over a fraction of a watt-hour. The midnight reset reads each plug
@@ -1984,30 +1993,30 @@ class Plugin(indigo.PluginBase):
             component = ("Light" if dev.deviceTypeId != "shellyRGBW"
                          else self._rgbw_set_component(dev, ip))
 
-            if action.deviceAction == indigo.kDimmerAction.TurnOn:
+            if action.deviceAction == indigo.kDeviceAction.TurnOn:
                 if self._light_set(ip, channel_id, on=True, component=component):
                     dev.updateStateOnServer("onOffState", True)
                     self._log_activity(f'sent "{dev.name}" on')
 
-            elif action.deviceAction == indigo.kDimmerAction.TurnOff:
+            elif action.deviceAction == indigo.kDeviceAction.TurnOff:
                 if self._light_set(ip, channel_id, on=False, component=component):
                     dev.updateStateOnServer("onOffState", False)
                     self._log_activity(f'sent "{dev.name}" off')
 
-            elif action.deviceAction == indigo.kDimmerAction.Toggle:
+            elif action.deviceAction == indigo.kDeviceAction.Toggle:
                 new_state = not dev.onState
                 if self._light_set(ip, channel_id, on=new_state, component=component):
                     dev.updateStateOnServer("onOffState", new_state)
                     self._log_activity(f'sent "{dev.name}" toggle -> {"on" if new_state else "off"}')
 
-            elif action.deviceAction == indigo.kDimmerAction.SetBrightness:
+            elif action.deviceAction == indigo.kDeviceAction.SetBrightness:
                 brightness = max(0, min(100, int(action.actionValue)))
                 if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness, component=component):
                     dev.updateStateOnServer("brightnessLevel", brightness)
                     dev.updateStateOnServer("onOffState", brightness > 0)
                     self._log_activity(f'sent "{dev.name}" brightness -> {brightness}%')
 
-            elif action.deviceAction == indigo.kDimmerAction.BrightenBy:
+            elif action.deviceAction == indigo.kDeviceAction.BrightenBy:
                 current    = dev.states.get("brightnessLevel", 0)
                 brightness = min(100, current + int(action.actionValue))
                 if self._light_set(ip, channel_id, on=True, brightness=brightness, component=component):
@@ -2015,7 +2024,7 @@ class Plugin(indigo.PluginBase):
                     dev.updateStateOnServer("onOffState", True)
                     self._log_activity(f'sent "{dev.name}" brighten -> {brightness}%')
 
-            elif action.deviceAction == indigo.kDimmerAction.DimBy:
+            elif action.deviceAction == indigo.kDeviceAction.DimBy:
                 current    = dev.states.get("brightnessLevel", 100)
                 brightness = max(0, current - int(action.actionValue))
                 if self._light_set(ip, channel_id, on=(brightness > 0), brightness=brightness, component=component):
@@ -2023,7 +2032,7 @@ class Plugin(indigo.PluginBase):
                     dev.updateStateOnServer("onOffState", brightness > 0)
                     self._log_activity(f'sent "{dev.name}" dim -> {brightness}%')
 
-            elif action.deviceAction == indigo.kDimmerAction.RequestStatus:
+            elif action.deviceAction == indigo.kDeviceAction.RequestStatus:
                 self._poll_device(dev)
 
         except Exception as exc:

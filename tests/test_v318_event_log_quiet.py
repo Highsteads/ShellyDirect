@@ -219,7 +219,7 @@ def test_dimmer_brightness_echo_is_quiet_too(plugin_mod, monkeypatch):
               _pref_int=lambda props, key, default=0: default,
               _poll_device=lambda d: None)
     action = types.SimpleNamespace(
-        deviceAction=plugin_mod.indigo.kDimmerAction.SetBrightness, actionValue=42)
+        deviceAction=plugin_mod.indigo.kDeviceAction.SetBrightness, actionValue=42)
     plugin_mod.Plugin.actionControlDimmer(h, action, dev)
     assert h.logger.at("DEBUG") == ['sent "Kitchen Plug" brightness -> 42%']
     assert event_log == []

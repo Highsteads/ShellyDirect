@@ -38,15 +38,6 @@ kDeviceAction.Toggle        = "Toggle"
 kDeviceAction.RequestStatus = "RequestStatus"
 indigo_mock.kDeviceAction   = kDeviceAction
 
-kDimmerAction = MagicMock()
-kDimmerAction.TurnOn        = "TurnOn"
-kDimmerAction.TurnOff       = "TurnOff"
-kDimmerAction.Toggle        = "Toggle"
-kDimmerAction.SetBrightness = "SetBrightness"
-kDimmerAction.BrightenBy    = "BrightenBy"
-kDimmerAction.DimBy         = "DimBy"
-indigo_mock.kDimmerAction   = kDimmerAction
-
 indigo_mock.devices   = MagicMock()
 indigo_mock.variables = MagicMock()
 indigo_mock.variable  = MagicMock()

@@ -7,6 +7,10 @@ nav_order: 15
 
 The newest version is at the top.
 
+## 4.3.3 — 5 October 2026
+
+**Shelly Dimmer and RGBW lights work from Indigo again.** Turn On, Turn Off, Toggle, Set Brightness, Brighten By and Dim By on a Shelly Dimmer or a Shelly RGBW failed every time. The Event Log showed "actionControlDimmer exception" and the light did nothing. The plugin was asking Indigo for a list of dimmer actions that does not exist, instead of the list Indigo really has. Relays, covers and the rest were never affected. The **Set RGBW Color** action was not affected either, because it takes its own route.
+
 ## 4.3.2 — 29 September 2026
 
 Fewer false alarms at midnight. Just after midnight five or six plugs a night logged "cumulative energy went backwards" when their first reading came in a fraction of a watt-hour below the new day's starting point, because that reading was slightly older than the one taken at midnight. A drop that small now simply means no energy used yet. A real counter reset, which falls much further, is still checked twice before it is believed, as before. The energy figures themselves were never affected.

@@ -2,7 +2,7 @@
 
 **Control and watch the Shelly Plus, Pro, Gen 3 and Gen 4 range from Indigo, straight over your home network.**
 
-**Version:** 4.3.2 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
+**Version:** 4.3.3 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
 
 **[Read the full guide](https://highsteads.github.io/ShellyDirect/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -55,6 +55,8 @@ Battery sensors sleep, so discovery usually misses them. Add those by hand with 
 
 ## What's new
 
+**v4.3.3** — Shelly Dimmer and RGBW lights work from Indigo again. Turn On, Turn Off, Toggle, Set Brightness, Brighten By and Dim By on them failed every time and logged "actionControlDimmer exception", because the plugin asked Indigo for a list of dimmer actions that does not exist. Relays, covers and the rest were never affected.
+
 **v4.3.2** — Fewer false alarms at midnight. Plugs no longer log "cumulative energy went backwards" when the first reading after midnight comes in a fraction of a watt-hour below the new day's starting point. The energy figures were never wrong, only the warning.
 
 **v4.3.1** — No change to how the plugin works. Two notes in the code now explain why the relay list for the Switched Outside Indigo trigger, and discovery, include disabled devices.
@@ -62,8 +64,6 @@ Battery sensors sleep, so discovery usually misses them. Add those by hand with 
 **v4.3.0** — The smoke and flood alarms, the i4's first input and the energy meter's total power now show in Indigo, and the H&T, Smoke and Flood report their battery. A new **Accept Replaced Shellys** menu item lets a device take on a Shelly you have swapped for a new one. A plug with a High Power Alert no longer reports a false problem when a reading comes without a power figure. BLU buttons no longer write a reading that went nowhere on every press.
 
 **v4.2.0** — A new **Set Firmware Hold** action ticks or unticks **Hold Firmware** on a device, so it can be changed from a schedule or a script as well as the device dialog.
-
-**v4.1.0** — Two new menu items, **Show Electricity Price on All Plugs** and **Stop Showing Electricity Price on Plugs**, set the price light on every plug with an LED ring at once. The LED ring, colour and switch-settings commands now work, and "- none -" in the price menus really means none.
 
 Every version is listed in the [version history](https://highsteads.github.io/ShellyDirect/changelog.html).
 
