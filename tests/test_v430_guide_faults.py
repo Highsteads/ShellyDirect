@@ -268,7 +268,7 @@ def _accept_host(plugin_mod, monkeypatch, answering, advertised=None):
     monkeypatch.setattr(plugin_mod.threading, "Thread",
                         lambda target=None, args=(), daemon=None: types.SimpleNamespace(start=lambda: None))
     host = types.SimpleNamespace(
-        _identity_bad={}, _identity_warned=set(), _mac_verified={}, last_polled={},
+        _identity_bad={}, _identity_bad_ip={}, _identity_warned=set(), _mac_verified={}, last_polled={},
         _props_lock=threading.RLock(),
         _read_device_mac=lambda ip: answering,
         _mdns_lookup=lambda mac: (advertised or {}).get(mac),

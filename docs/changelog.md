@@ -7,6 +7,14 @@ nav_order: 15
 
 The newest version is at the top.
 
+## 4.3.4 — 5 October 2026
+
+Three faults found by an outside review are put right.
+
+- **A command is no longer sent to the wrong Shelly.** When the plugin has found a different Shelly answering at a device's address, it now refuses that device's on, off, brightness, colour, blind and timed commands, and the Event Log says which Shelly is there. Before, it stopped recording that device's readings but still sent its commands, so a mixed-up address could switch another plug. A Shelly that is simply not answering, or has not been checked yet, still gets its commands straight away, so a garage door or a light is never left uncontrollable. Once the plugin finds the device again by its MAC address, its commands go through again by themselves.
+- **A disabled device ignores its Shelly.** Switch changes and button presses from a Shelly whose Indigo device is disabled no longer change the device or fire its button triggers.
+- **The energy history file cannot be left half-written.** The plugin now writes it to a spare file first and swaps it in, so a crash or a full disk part-way through leaves the old copy whole.
+
 ## 4.3.3 — 5 October 2026
 
 **Shelly Dimmer and RGBW lights work from Indigo again.** Turn On, Turn Off, Toggle, Set Brightness, Brighten By and Dim By on a Shelly Dimmer or a Shelly RGBW failed every time. The Event Log showed "actionControlDimmer exception" and the light did nothing. The plugin was asking Indigo for a list of dimmer actions that does not exist, instead of the list Indigo really has. Relays, covers and the rest were never affected. The **Set RGBW Color** action was not affected either, because it takes its own route.

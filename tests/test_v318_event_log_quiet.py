@@ -87,7 +87,10 @@ def _host(plugin_mod, log_activity=False, **extra):
     the stub works, which is how a routing change gets tested into thin air.
     """
     h = types.SimpleNamespace(logger=_Logger(), log_activity=log_activity,
-                              _webhook_bad=set(), _webhook_setup_fails={}, **extra)
+                              _webhook_bad=set(), _webhook_setup_fails={},
+                              _identity_bad={}, _identity_bad_ip={}, **extra)
+    # v4.3.4: every command asks the shipped gate for its address.
+    h._command_ip = plugin_mod.Plugin._command_ip.__get__(h)
     h._log_activity = plugin_mod.Plugin._log_activity.__get__(h)
     h._note_webhook_setup_failure = (
         plugin_mod.Plugin._note_webhook_setup_failure.__get__(h))

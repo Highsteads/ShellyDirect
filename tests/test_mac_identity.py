@@ -86,6 +86,7 @@ def make_plugin(plugin_mod, macs_at=None, verify_secs=3600):
     p._zc_browser       = None
     p._mac_verified     = {}
     p._identity_bad     = {}
+    p._identity_bad_ip  = {}
     p._identity_warned  = set()
     p._relocate_attempt = {}
     p._confirm_attempt  = {}

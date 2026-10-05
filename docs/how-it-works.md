@@ -45,7 +45,7 @@ So the plugin knows each Shelly by its **MAC address** — a number every networ
 
 **Plugins → Shelly Direct → Show mDNS Discovered Shellys** lists every Shelly announcing itself, its MAC address and current address, and the Indigo device it matches, and points out any device whose stored address is out of date.
 
-Commands you send — on, off, brightness, a blind position — go to the stored address straight away, without waiting for this check, so a garage door or a light is never left uncontrollable.
+Commands you send — on, off, brightness, a blind position — go to the stored address straight away, without waiting for this check, so a garage door or a light is never left uncontrollable. The one exception is when the check has already found a different Shelly answering at that address: then the command is not sent, because it would switch the wrong Shelly, and the Event Log says so. Once the plugin finds the right Shelly again, commands go through as normal.
 
 ## Shellys that insist on a secure connection
 

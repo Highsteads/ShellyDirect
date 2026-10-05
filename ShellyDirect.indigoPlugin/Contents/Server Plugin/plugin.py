@@ -3,9 +3,22 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2); Claude Sonnet 5.5 (4.3.3)
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2, 4.3.4); Claude Sonnet 5.5 (4.3.3)
 # Date:        05-10-2026
-# Version:     4.3.3
+# Version:     4.3.4
+#
+# v4.3.4 (05-10-2026): three faults from an outside review. (1) Commands now
+# go through _command_ip, which refuses them only when the identity check has
+# POSITIVELY read a different Shelly's MAC at the address stored now
+# (_identity_bad + _identity_bad_ip, set together by _flag_identity_bad) and
+# logs one WARNING per refused command. An unverified or unreachable device
+# still gets its commands, so the garage door is never locked out, and the
+# poll gate's relocation clears the flag so commands resume. Status requests
+# are not refused (they read through the poll gate). (2) The webhook listener
+# answers 200 and does nothing for a disabled or unconfigured device
+# (_webhook_target_active): no state writes, no button triggers, no stale-hook
+# repair. (3) _save_energy_data writes a temp file, fsyncs it, keeps the old
+# file's mode and os.replace's it in, one save at a time.
 #
 # v4.3.3 (05-10-2026): Shelly Dimmer and RGBW lights can be switched and dimmed
 # from Indigo again. actionControlDimmer compared the action against a
@@ -508,7 +521,9 @@ import logging
 import os
 import re
 import socketserver
+import stat
 import sys as _sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -1584,6 +1599,7 @@ class Plugin(indigo.PluginBase):
         self.webhook_server       = None
         self.energy_data          = {}   # {str(dev_id): {...baselines + history...}}
         self._energy_lock         = threading.RLock()  # guards energy_data RMW across threads
+        self._energy_save_lock    = threading.Lock()   # one writer of energy_data.json at a time
         # last_date persisted across restarts so a restart spanning midnight still
         # triggers the daily reset on the first tick (network available), instead of
         # silently skipping it because __init__ seeded today.
@@ -1609,6 +1625,7 @@ class Plugin(indigo.PluginBase):
         self._mdns_refreshed   = 0.0  # last forced re-browse
         self._mac_verified     = {}   # {dev_id: ts of last good identity check}
         self._identity_bad     = {}   # {dev_id: MAC found instead} - writes refused
+        self._identity_bad_ip  = {}   # {dev_id: address that MAC answered at} - commands refused there
         self._identity_warned  = set()# (dev_id, ip, found_mac) already logged once
         self._relocate_attempt = {}   # {dev_id: ts} throttles offline relocation
         self._webhook_bad      = set() # dev_ids whose webhook trouble was announced
@@ -1940,7 +1957,14 @@ class Plugin(indigo.PluginBase):
                 self._cover_standard_action(action, dev)
                 return
 
-            ip = dev.pluginProps.get("ip_address", "").strip()
+            # A status request reads, and the poll gate guards reads itself.
+            if action.deviceAction == indigo.kDeviceAction.RequestStatus:
+                self._poll_device(dev)
+                return
+
+            ip = self._command_ip(dev)
+            if ip is None:
+                return
             if not ip:
                 log(f'[{dev.name}] No IP address configured', level="ERROR")
                 return
@@ -1974,16 +1998,19 @@ class Plugin(indigo.PluginBase):
                 else:
                     log(f'failed to toggle "{dev.name}"', level="ERROR")
 
-            elif action.deviceAction == indigo.kDeviceAction.RequestStatus:
-                self._poll_device(dev)
-
         except Exception as exc:
             log(f'actionControlDevice exception for "{dev.name}": {exc}', level="ERROR")
 
     def actionControlDimmer(self, action, dev):
         """Handle brightness actions for shellyDimmer and shellyRGBW devices."""
         try:
-            ip = dev.pluginProps.get("ip_address", "").strip()
+            if action.deviceAction == indigo.kDeviceAction.RequestStatus:
+                self._poll_device(dev)
+                return
+
+            ip = self._command_ip(dev)
+            if ip is None:
+                return
             if not ip:
                 log(f'[{dev.name}] No IP address configured', level="ERROR")
                 return
@@ -2032,9 +2059,6 @@ class Plugin(indigo.PluginBase):
                     dev.updateStateOnServer("onOffState", brightness > 0)
                     self._log_activity(f'sent "{dev.name}" dim -> {brightness}%')
 
-            elif action.deviceAction == indigo.kDeviceAction.RequestStatus:
-                self._poll_device(dev)
-
         except Exception as exc:
             log(f'actionControlDimmer exception for "{dev.name}": {exc}', level="ERROR")
 
@@ -2047,8 +2071,10 @@ class Plugin(indigo.PluginBase):
         try:
             dev     = indigo.devices[action.deviceId]
             seconds = int(action.props.get("seconds", 1))
-            ip      = dev.pluginProps.get("ip_address", "").strip()
+            ip      = self._command_ip(dev, f"On for {seconds} seconds")
             chan    = self._pref_int(dev.pluginProps, "channel_id", 0)
+            if ip is None:
+                return
             if not ip:
                 log(f'[{dev.name}] No IP for on_for_seconds', level="ERROR")
                 return
@@ -2074,7 +2100,7 @@ class Plugin(indigo.PluginBase):
         try:
             pos = max(0, min(100, int(action.props.get("position", 50))))
             dev = indigo.devices[action.deviceId]
-            ip  = dev.pluginProps.get("ip_address", "").strip()
+            ip  = self._command_ip(dev, f"Go to position {pos}%")
             if not ip:
                 return
             chan = self._pref_int(dev.pluginProps, "channel_id", 0)
@@ -2094,7 +2120,7 @@ class Plugin(indigo.PluginBase):
         try:
             tilt = max(0, min(100, int(action.props.get("tilt", 50))))
             dev  = indigo.devices[action.deviceId]
-            ip   = dev.pluginProps.get("ip_address", "").strip()
+            ip   = self._command_ip(dev, f"Set tilt {tilt}%")
             if not ip:
                 return
             chan = self._pref_int(dev.pluginProps, "channel_id", 0)
@@ -2114,7 +2140,7 @@ class Plugin(indigo.PluginBase):
         try:
             dev        = indigo.devices[action.deviceId]
             brightness = max(0, min(100, int(action.props.get("brightness", 100))))
-            ip         = dev.pluginProps.get("ip_address", "").strip()
+            ip         = self._command_ip(dev, f"Set brightness {brightness}%")
             channel_id = self._pref_int(dev.pluginProps, "channel_id", 0)
             if not ip:
                 return
@@ -2130,7 +2156,7 @@ class Plugin(indigo.PluginBase):
     def actionSetColor(self, action):
         try:
             dev = indigo.devices[action.deviceId]
-            ip  = dev.pluginProps.get("ip_address", "").strip()
+            ip  = self._command_ip(dev, "Set colour")
             if not ip:
                 return
             r  = max(0, min(255, int(action.props.get("red",        255))))
@@ -2341,6 +2367,7 @@ class Plugin(indigo.PluginBase):
                 dev = indigo.devices[dev_id]
             except KeyError:
                 self._identity_bad.pop(dev_id, None)
+                self._identity_bad_ip.pop(dev_id, None)
                 continue
             found = normalise_mac(found)
             ip    = dev.pluginProps.get("ip_address", "").strip()
@@ -2688,6 +2715,11 @@ class Plugin(indigo.PluginBase):
             threading.Thread(target=self._remove_hooks_for, daemon=True,
                              args=(shelly_ip, stale_dev_id)).start()
 
+    @staticmethod
+    def _webhook_target_active(target):
+        """True when a webhook's device should act on it: enabled and configured."""
+        return bool(getattr(target, "enabled", True)) and bool(getattr(target, "configured", True))
+
     def _webhook_source_ok(self, target, src_ip):
         """True when a webhook naming `target` really came from its Shelly.
 
@@ -2773,6 +2805,14 @@ class Plugin(indigo.PluginBase):
                         plugin._repair_stale_webhook(src, dev_id)
                         self.send_response(404); self.end_headers(); return
 
+                    # v4.3.4: a disabled or unconfigured device takes no
+                    # events -- no state writes, no button triggers. Answer
+                    # 200 so the Shelly is content and nothing tries to
+                    # "repair" a hook that is not stale.
+                    if not Plugin._webhook_target_active(target):
+                        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+                        return
+
                     # v3.19.0: the sender must be the device it names. Until
                     # now anything that reached the listener was believed, so a
                     # plug carrying another device's old hook wrote its own
@@ -2850,6 +2890,9 @@ class Plugin(indigo.PluginBase):
                         # gateway, which now also removes the dead hook.
                         plugin._repair_stale_webhook(gw_ip, dev_id, blu=True)
                         self.send_response(404); self.end_headers(); return
+                    if not Plugin._webhook_target_active(target):
+                        self.send_response(200); self.end_headers(); self.wfile.write(b"OK")
+                        return
                     if not plugin._webhook_source_ok(target, gw_ip):
                         plugin._refuse_foreign_webhook(target, gw_ip)
                         self.send_response(409); self.end_headers(); return
@@ -3769,9 +3812,46 @@ class Plugin(indigo.PluginBase):
             new_props["ip_address"] = ip
             dev.replacePluginPropsOnServer(new_props)
 
+    def _flag_identity_bad(self, dev_id, ip, found_mac):
+        """Record that a DIFFERENT Shelly answers at this device's address.
+
+        The address is kept with the MAC so the command gate can tell a live
+        refusal from a stale one: once the device's address has changed,
+        nothing is known to be wrong at the new one.
+        """
+        self._identity_bad[dev_id]    = found_mac
+        self._identity_bad_ip[dev_id] = ip
+
     def _identity_cleared(self, dev):
         self._identity_bad.pop(dev.id, None)
+        self._identity_bad_ip.pop(dev.id, None)
         self._identity_warned = {k for k in self._identity_warned if k[0] != dev.id}
+
+    def _command_ip(self, dev, what="command"):
+        """The address to send a command to, "" when none is set, or None to
+        refuse the command.
+
+        v4.3.4: commands are refused only when identity is POSITIVELY wrong --
+        the check read a different MAC at the very address stored now, so the
+        command would switch some other Shelly (the July 192.168.4.118 clash,
+        where two Indigo devices pointed at one plug). A check that merely
+        could not be done -- unreachable, no MAC stored yet, not yet verified
+        -- never holds a command back, so the garage door and the lights stay
+        controllable. The poll gate keeps looking for the device by MAC and
+        moves it when found, which clears the refusal, so commands resume by
+        themselves.
+        """
+        ip    = dev.pluginProps.get("ip_address", "").strip()
+        found = self._identity_bad.get(dev.id)
+        if not ip or not found:
+            return ip
+        if self._identity_bad_ip.get(dev.id, ip) != ip:
+            return ip
+        log(f'[{dev.name}] {what} not sent: a different Shelly ({found}) answers at '
+            f'{ip}, not this device. Nothing will be sent to it until it is found '
+            f'again by MAC. If the Shelly was replaced with a new one, use Plugins -> '
+            f'Shelly Direct -> Accept Replaced Shellys.', level="WARNING")
+        return None
 
     def _identity_mismatch(self, dev, ip, found):
         """Refuse to write anything for this device, and say so once.
@@ -3781,14 +3861,14 @@ class Plugin(indigo.PluginBase):
         """
         found_mac  = normalise_mac(found)
         stored_mac = normalise_mac(dev.pluginProps.get("mac_address", ""))
-        self._identity_bad[dev.id] = found_mac
+        self._flag_identity_bad(dev.id, ip, found_mac)
         key = (dev.id, ip, found_mac)
         if key in self._identity_warned:
             return
         self._identity_warned.add(key)
         log(f"[{dev.name}] wrong device at {ip} - expected MAC {stored_mac}, found "
-            f"{found_mac or '(unreadable)'}. Nothing will be recorded for this device "
-            f"until it is found again by MAC. Check whether its address has changed. "
+            f"{found_mac or '(unreadable)'}. Nothing will be recorded for this device, "
+            f"and no command sent to it, until it is found again by MAC. Check whether its address has changed. "
             f"If the Shelly was replaced with a new one, use Plugins -> Shelly Direct "
             f"-> Accept Replaced Shellys.",
             level="WARNING")
@@ -5327,7 +5407,7 @@ class Plugin(indigo.PluginBase):
     def _cover_cmd(self, dev_id, rpc_method):
         try:
             dev = indigo.devices[dev_id]
-            ip  = dev.pluginProps.get("ip_address", "").strip()
+            ip  = self._command_ip(dev, rpc_method)
             if not ip:
                 return
             # v3.12: honour the device's channel (multi-cover devices exist now
@@ -5674,13 +5754,42 @@ class Plugin(indigo.PluginBase):
         return orphans
 
     def _save_energy_data(self):
+        """Replace energy_data.json atomically.
+
+        v4.3.4: it used to be truncated and rewritten in place, so a crash, a
+        restart or a full disk part-way through left an empty or half-written
+        file, and every baseline went with it. Now the new content goes to a
+        temporary file beside it, is flushed to disk, and os.replace swaps it
+        in, so the file on disk is always either the old copy or the new one.
+        The file keeps its permissions. One save at a time.
+        """
+        tmp = None
         try:
             with self._energy_lock:
                 snapshot = json.dumps(self.energy_data, indent=2)
-            with open(self._energy_data_path(), "w", encoding="utf-8") as f:
-                f.write(snapshot)
+            with self._energy_save_lock:
+                path = self._energy_data_path()
+                try:
+                    mode = stat.S_IMODE(os.stat(path).st_mode)
+                except FileNotFoundError:
+                    mode = 0o644
+                fd, tmp = tempfile.mkstemp(prefix=".energy_data.", suffix=".tmp",
+                                           dir=os.path.dirname(path) or ".")
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(snapshot)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.chmod(tmp, mode)
+                os.replace(tmp, path)
+                tmp = None
         except Exception as exc:
             log(f"Could not save energy data: {exc}", level="WARNING")
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
     def _calc_energy(self, dev_id, total_wh):
         key       = str(dev_id)
@@ -6372,11 +6481,12 @@ class Plugin(indigo.PluginBase):
                             # leave it; the poll gate refuses to write meanwhile.
                             # v4.3.0: flag it, so the poll gate stops writing now
                             # and Accept Replaced Shellys can act on it.
-                            self._identity_bad[ip_dev.id] = mac_upper
+                            self._flag_identity_bad(ip_dev.id, ip, mac_upper)
                             log(f"[Discovery] {ip_dev.name:<30} {ip:<18} -- {mac_upper} "
                                 f"answers here, but this device is {stored}. Its stored "
                                 f"address is wrong (or the hardware was replaced). No "
-                                f"data is being recorded for it. Correct the address, or "
+                                f"data is being recorded for it and no commands are "
+                                f"sent to it. Correct the address, or "
                                 f"if the unit really was swapped use Plugins -> Shelly "
                                 f"Direct -> Accept Replaced Shellys.", level="WARNING")
                         elif not stored:

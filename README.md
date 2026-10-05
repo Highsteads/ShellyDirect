@@ -2,7 +2,7 @@
 
 **Control and watch the Shelly Plus, Pro, Gen 3 and Gen 4 range from Indigo, straight over your home network.**
 
-**Version:** 4.3.3 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
+**Version:** 4.3.4 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
 
 **[Read the full guide](https://highsteads.github.io/ShellyDirect/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -54,6 +54,8 @@ For the older Gen 1 Shellys, such as the original Shelly 1, use my other plugin,
 Battery sensors sleep, so discovery usually misses them. Add those by hand with **New Device**. The [full guide](https://highsteads.github.io/ShellyDirect/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v4.3.4** — A command is no longer sent to the wrong Shelly. When a different Shelly answers at a device's address, the plugin now refuses that device's commands and says so in the Event Log, instead of switching whatever plug is there. A Shelly that is merely not answering still gets its commands at once. A disabled device also ignores its Shelly's switch changes and button presses, and the energy history file can no longer be left half-written by a crash.
 
 **v4.3.3** — Shelly Dimmer and RGBW lights work from Indigo again. Turn On, Turn Off, Toggle, Set Brightness, Brighten By and Dim By on them failed every time and logged "actionControlDimmer exception", because the plugin asked Indigo for a list of dimmer actions that does not exist. Relays, covers and the rest were never affected.
 

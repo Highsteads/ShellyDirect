@@ -23,7 +23,7 @@ Three or more Shellys dropped off within three minutes of each other. That is al
 
 ## The log says "wrong device at" an address
 
-A different Shelly is answering at this device's address. Nothing from it is recorded, so its readings cannot end up on the wrong device.
+A different Shelly is answering at this device's address. Nothing from it is recorded, so its readings cannot end up on the wrong device, and no command is sent to it, so switching the device in Indigo cannot switch the other Shelly. The log says "not sent: a different Shelly ... answers at" each time a command is held back.
 
 - If your router has moved the Shelly to a new address, the plugin looks for it and updates the device itself — give it a few minutes, or run **Discover Shelly Devices**.
 - If you have replaced the Shelly with a new one at the same address, the new one has a different MAC address, so the plugin will not take it as the old one until you tell it to. Choose **Plugins → Shelly Direct → Accept Replaced Shellys**. The device keeps its name, triggers, schedules and control pages, and takes on the new Shelly. The plugin checks first that the new Shelly is answering and that the old one has not simply moved to another address, and says in the Event Log what it did.
