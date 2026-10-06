@@ -4,7 +4,7 @@
 # Description: Regression tests for the three faults the 05-10-2026 audit found.
 #              SD-1: commands went to the stored address even when the identity
 #              check had POSITIVELY found a different Shelly answering there, so
-#              an address clash (July, 192.168.4.118) would switch the wrong
+#              an address clash (July, one address held by two Indigo devices) would switch the wrong
 #              plug. A check that merely could not be done must still let the
 #              command through. SD-3: the webhook listener wrote states and
 #              fired button triggers for a DISABLED device. SD-2: the energy

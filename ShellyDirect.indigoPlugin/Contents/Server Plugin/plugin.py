@@ -3935,7 +3935,7 @@ class Plugin(indigo.PluginBase):
 
         v4.3.4: commands are refused only when identity is POSITIVELY wrong --
         the check read a different MAC at the very address stored now, so the
-        command would switch some other Shelly (the July 192.168.4.118 clash,
+        command would switch some other Shelly (the July address clash,
         where two Indigo devices pointed at one plug). A check that merely
         could not be done -- unreachable, no MAC stored yet, not yet verified
         -- never holds a command back, so the garage door and the lights stay
