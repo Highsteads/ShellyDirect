@@ -7,6 +7,14 @@ nav_order: 15
 
 The newest version is at the top.
 
+## 4.3.6 — 1 November 2026
+
+Three faults found by a code review are put right.
+
+- **No more old readings shown as current after a restart.** When Indigo, the plugin or the Mac restarted, each Shelly kept showing the readings it had before the restart until three polls in a row had failed, which took a minute or more. A plug switched off at the wall during the restart could show its old power, such as 1,800 W, as if it were still drawing it, and Appliance Monitor could take that as the start of a cycle. Now a Shelly that fails its first poll after a restart is marked offline straight away. Once a Shelly has answered, a single lost poll still does not mark it offline, so a short Wi-Fi drop in the middle of a wash is ignored as before. The power reading is not set to 0 when a Shelly goes offline, because Appliance Monitor relies on the last reading while a cycle is running.
+- **One Shelly that stops answering no longer slows down all the others.** The plugin's occasional check on each Shelly's Wi-Fi signal and uptime was retried every 10 seconds when it failed, instead of waiting until it was next due. When several plugs dropped off the Wi-Fi together, every round of polling waited on each of them in turn, and readings from the plugs that were still working went stale. A failed check now waits for its normal interval.
+- **An energy meter no longer records a missing figure as 0 W.** If a Shelly Pro EM or 3EM left a figure out of its reply, the plugin wrote 0 W (or 0 V, 0 A) as if it were a real reading. It now writes only the figures the Shelly actually sent and keeps the last real reading for the rest. Plugs and relays already worked this way.
+
 ## 4.3.5 — 5 October 2026
 
 **A quieter stop.** When the plugin stopped, a message from a Shelly's live connection could arrive after Indigo had already closed its own connection to the plugin. The plugin tried to write it down anyway and left a "CClientMgr not created" line in its own log. The plugin now notes that it is stopping as soon as Indigo says so, and from then on ignores anything arriving from the live connections, the Shellys' own switch and button messages, and the checks that run in the background. It also closes the live connections and waits a few seconds at most for them to finish. Nothing changes while the plugin is running.

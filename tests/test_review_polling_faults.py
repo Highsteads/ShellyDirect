@@ -3,12 +3,11 @@
 # Filename:    test_review_polling_faults.py
 # Description: Tests written alongside the 01-11-2026 code review. They pin the
 #              behaviour of the relay command path, the slow "detail" sweep and
-#              the energy-meter poll. Tests marked xfail describe a fault the
-#              review found; they are expected to fail until the plugin is
-#              fixed, and pytest will report XPASS once it is.
+#              the energy-meter poll. The detail-sweep, EM 0 W and restart
+#              tests cover the faults the review found, fixed in v4.3.6.
 # Author:      CliveS & Claude Opus 5.5
 # Date:        01-11-2026
-# Version:     1.0
+# Version:     1.1 (v4.3.6 fixes: xfails removed, restart tests added)
 
 from __future__ import annotations
 
@@ -164,11 +163,6 @@ def test_a_successful_detail_sweep_is_stamped(plugin_mod):
     assert host.last_detail[1] >= before
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: _poll_detail only stamps last_detail on success, so a Shelly that "
-    "times out on Shelly.GetStatus is retried on EVERY 10-second tick (4 s "
-    "timeout each) until the fast poll has failed three times, stalling the "
-    "single poll thread for every other device"))
 def test_a_failed_detail_sweep_waits_for_its_interval(plugin_mod):
     def _timeout(url, timeout=None):
         raise requests.exceptions.Timeout("slow")
@@ -227,10 +221,6 @@ def test_em_poll_keeps_energy_when_the_energy_read_fails(plugin_mod, quiet_log):
     assert dev.states["energyKwhToday"] == 5.5
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: _poll_em reads every field with `or 0.0`, so a status that omits "
-    "act_power writes 0 W as if it were a real reading; the relay poll was "
-    "fixed for the same fault in v3.14 but the EM poll was not"))
 def test_em_poll_does_not_invent_zero_watts(plugin_mod, quiet_log):
     host, _ = _em_host(plugin_mod, {
         "EM1.GetStatus":     FakeResp({"voltage": 240.0}),        # no act_power
@@ -288,3 +278,93 @@ def test_marking_a_device_offline_flips_deviceOnline(plugin_mod):
     plugin_mod.Plugin._mark_offline(host, dev, "timed out")
     assert dev.states["deviceOnline"] is False
     assert fired and fired[0][0] == "deviceWentOffline"
+
+
+def test_em_poll_keeps_the_last_reading_when_power_is_missing_but_writes_the_rest(plugin_mod, quiet_log):
+    host, _ = _em_host(plugin_mod, {
+        "EM1.GetStatus":     FakeResp({"voltage": 241.5}),        # no act_power
+        "EM1Data.GetStatus": FakeResp({"total_act_energy": 12345.0}),
+    })
+    dev = FakeDev(3, "Grid Clamp", type_id="shellyEM",
+                  states={"sensorValue": 480.0, "powerA": 480.0, "currentA": 2.0})
+    plugin_mod.Plugin._poll_em(host, dev)
+    assert dev.states["voltageA"] == 241.5                         # sent, so written
+    assert dev.states["powerA"] == 480.0 and dev.states["currentA"] == 2.0   # not sent, kept
+
+
+def test_3phase_total_falls_back_to_the_sum_only_when_every_phase_is_there(plugin_mod, quiet_log):
+    full = {"a_act_power": 100.0, "b_act_power": 200.0, "c_act_power": 300.0,
+            "a_voltage": 240.0, "b_voltage": 240.0, "c_voltage": 240.0}
+    host, _ = _em_host(plugin_mod, {"EM.GetStatus": FakeResp(full),
+                                    "EMData.GetStatus": FakeResp({"total_act": 1.0})})
+    dev = FakeDev(4, "House", type_id="shellyEM", props={"is_3phase": True})
+    plugin_mod.Plugin._poll_em(host, dev)
+    assert dev.states["sensorValue"] == 600.0
+
+    partial = {"a_act_power": 100.0, "b_act_power": 200.0}         # phase C missing
+    host, _ = _em_host(plugin_mod, {"EM.GetStatus": FakeResp(partial),
+                                    "EMData.GetStatus": FakeResp({"total_act": 1.0})})
+    dev = FakeDev(4, "House", type_id="shellyEM", props={"is_3phase": True},
+                  states={"sensorValue": 650.0, "powerC": 350.0})
+    plugin_mod.Plugin._poll_em(host, dev)
+    assert dev.states["sensorValue"] == 650.0, "a partial sum must not replace the total"
+    assert dev.states["powerC"] == 350.0
+    assert dev.states["powerA"] == 100.0
+
+
+def test_em_poll_with_a_real_zero_writes_zero(plugin_mod, quiet_log):
+    host, _ = _em_host(plugin_mod, {
+        "EM1.GetStatus":     FakeResp({"voltage": 240.0, "current": 0.0, "act_power": 0.0}),
+        "EM1Data.GetStatus": FakeResp({"total_act_energy": 1.0}),
+    })
+    dev = FakeDev(3, "Grid Clamp", type_id="shellyEM", states={"sensorValue": 480.0})
+    plugin_mod.Plugin._poll_em(host, dev)
+    assert dev.states["sensorValue"] == 0.0
+
+
+# ── v4.3.6: a reading from before a restart must not look live ───────────────
+
+def _fail_host(unconfirmed):
+    offline = []
+    host = types.SimpleNamespace(
+        fail_count={}, last_polled={}, _unconfirmed=set(unconfirmed),
+        _mark_offline=lambda d, r="": offline.append((d.id, r)),
+        _try_relocate=lambda d: offline.append((d.id, "relocate")))
+    return host, offline
+
+
+def test_first_failure_after_a_start_marks_the_device_offline_at_once(plugin_mod):
+    host, offline = _fail_host({1})
+    dev = FakeDev(1, "Washer")
+    plugin_mod.Plugin._poll_failed(host, dev, "timed out")
+    assert offline == [(1, "timed out")]
+    assert host.fail_count[1] == 1, "the back-off count itself is unchanged"
+
+
+def test_a_device_that_has_answered_still_gets_three_strikes(plugin_mod):
+    """Mid-cycle Wi-Fi blips must not flip deviceOnline on one lost poll."""
+    host, offline = _fail_host(set())
+    dev = FakeDev(1, "Washer")
+    plugin_mod.Plugin._poll_failed(host, dev, "timed out")
+    plugin_mod.Plugin._poll_failed(host, dev, "timed out")
+    assert offline == []
+    plugin_mod.Plugin._poll_failed(host, dev, "timed out")
+    assert offline == [(1, "timed out"), (1, "relocate")]
+
+
+def test_a_successful_read_confirms_the_device(plugin_mod):
+    host = types.SimpleNamespace(
+        last_seen={}, fail_count={}, _mac_verified={}, webhook_repair_fails={},
+        _unconfirmed={1}, _note_back_online=lambda *a, **k: None)
+    dev = FakeDev(1, "Washer", states={"deviceOnline": True})
+    plugin_mod.Plugin._mark_online(host, dev)
+    assert host._unconfirmed == set()
+
+
+def test_going_offline_does_not_zero_power(plugin_mod):
+    """ApplianceMonitor keeps using the last watts while a cycle is running and
+    the meter is offline; a 0 here would end a wash on a Wi-Fi blip."""
+    host = types.SimpleNamespace(_offline_batch=[], _fire_trigger=lambda *a, **k: None)
+    dev  = FakeDev(1, "Washer", states={"deviceOnline": True, "powerWatts": 1834.2})
+    plugin_mod.Plugin._mark_offline(host, dev, "timed out")
+    assert dev.states["powerWatts"] == 1834.2

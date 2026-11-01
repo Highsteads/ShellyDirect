@@ -2,7 +2,7 @@
 
 **Control and watch the Shelly Plus, Pro, Gen 3 and Gen 4 range from Indigo, straight over your home network.**
 
-**Version:** 4.3.5 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
+**Version:** 4.3.6 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
 
 **[Read the full guide](https://highsteads.github.io/ShellyDirect/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -54,6 +54,8 @@ For the older Gen 1 Shellys, such as the original Shelly 1, use my other plugin,
 Battery sensors sleep, so discovery usually misses them. Add those by hand with **New Device**. The [full guide](https://highsteads.github.io/ShellyDirect/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v4.3.6** — Readings that look live are live. After Indigo or the Mac restarts, a Shelly that does not answer is now shown as offline straight away, instead of showing its last power reading from before the restart as if it were current for a minute or more. One Shelly that stops answering no longer slows down the polling of all the others. A Shelly Pro EM or 3EM that leaves a figure out of its reply no longer has it recorded as 0 W; the last real reading is kept.
 
 **v4.3.5** — A quieter stop. When Indigo or the server shuts down, a message from a Shelly's live connection that arrives at that moment is now ignored, instead of leaving a "CClientMgr not created" line in the plugin's own log. Nothing changes while the plugin is running.
 

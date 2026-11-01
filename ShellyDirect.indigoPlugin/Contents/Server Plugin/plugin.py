@@ -3,9 +3,25 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2, 4.3.4); Claude Sonnet 5.5 (4.3.3, 4.3.5)
-# Date:        05-10-2026
-# Version:     4.3.5
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2, 4.3.4, 4.3.6); Claude Sonnet 5.5 (4.3.3, 4.3.5)
+# Date:        01-11-2026
+# Version:     4.3.6
+#
+# v4.3.6 (01-11-2026): three faults from the 01-11-2026 review.
+#   * _poll_detail stamps last_detail on FAILURE too. It used to stamp only on
+#     success, so a Shelly that stopped answering had its 4 s detail call
+#     retried on every 10 s tick until the fast poll had failed three times;
+#     with many plugs dropping together that stalled the single poll thread
+#     for every other device.
+#   * A device that fails its first poll after it starts (plugin start, Mac
+#     restart, props save) is marked offline at once instead of after three
+#     failures, so a power reading left over from before the restart is not
+#     shown as live for a minute or more. powerWatts is deliberately NOT
+#     zeroed on offline: ApplianceMonitor keeps using the last reading while a
+#     cycle is running, and a 0 there would end a wash on a Wi-Fi blip.
+#   * _poll_em writes only the readings the Shelly actually sent. Every field
+#     used to default to 0.0, so a reply missing act_power wrote 0 W as real
+#     (the v3.14 relay fix had never reached the energy meter).
 #
 # v4.3.5 (05-10-2026): a quiet stop. While 4.3.3 shut down, two live-link
 # frames arrived after Indigo had closed its connection to the plugin and their
@@ -1695,6 +1711,7 @@ class Plugin(indigo.PluginBase):
         self.live_connection   = as_bool(prefs.get("live_connection"), True)
         self._links            = {}   # {ip: ShellyLink}
         self._stopping         = False   # v4.3.5: True once Indigo starts stopping us
+        self._unconfirmed      = set()   # v4.3.6: started, no successful read yet
         self._links_checked    = 0.0
         self._link_status      = {}   # {dev_id: merged component status}
         self._link_dirty       = {}   # {dev_id: ts of the first unapplied delta}
@@ -1843,6 +1860,11 @@ class Plugin(indigo.PluginBase):
         dev.stateListOrDisplayStateIdChanged()
         self.last_polled[dev.id] = 0
         self.last_seen[dev.id]   = time.time()
+        # v4.3.6: whatever readings the device shows now are from before this
+        # start. Until one read succeeds, a single failed poll means offline.
+        unconfirmed = getattr(self, "_unconfirmed", None)
+        if unconfirmed is not None:
+            unconfirmed.add(dev.id)
         # v3.19.0: no longer forces deviceOnline True. A start happens on every
         # props save as well as at launch, and announcing a plug that is off at
         # the wall as online, only for the next poll to take it back, told
@@ -1877,6 +1899,9 @@ class Plugin(indigo.PluginBase):
         self.logger.debug(f"deviceStopComm: {dev.name}")
         self.last_polled.pop(dev.id, None)
         self.last_seen.pop(dev.id, None)
+        unconfirmed = getattr(self, "_unconfirmed", None)
+        if unconfirmed is not None:
+            unconfirmed.discard(dev.id)
 
     # Props whose change means the device must be restarted (re-polled at the
     # new address, webhooks re-pointed). Everything else the plugin writes into
@@ -4956,6 +4981,9 @@ class Plugin(indigo.PluginBase):
             resp.raise_for_status()
             data = resp.json() or {}
         except Exception as exc:
+            # v4.3.6: stamp the failure too, or a dead device is retried (4 s
+            # timeout) on every 10 s tick and holds up every other device.
+            self.last_detail[dev.id] = time.time()
             self.logger.debug(f'[{dev.name}] detail sweep skipped: {exc}')
             return
 
@@ -5203,29 +5231,40 @@ class Plugin(indigo.PluginBase):
         if not ip:
             return
         try:
+            # v4.3.6: only readings the Shelly actually sent are written. Every
+            # field used to default to 0.0, so a reply missing act_power wrote
+            # 0 W as if it were real (the v3.14 relay fix, never applied here).
+            num = self._get_total_wh          # float, or None when absent / not a number
             if is_3phase:
                 resp = self._rget(f"http://{ip}/rpc/EM.GetStatus?id=0")
                 resp.raise_for_status()
-                data = resp.json()
-                va  = float(data.get("a_voltage")   or 0.0)
-                ia  = float(data.get("a_current")   or 0.0)
-                pa  = float(data.get("a_act_power") or 0.0)
-                vb  = float(data.get("b_voltage")   or 0.0)
-                ib  = float(data.get("b_current")   or 0.0)
-                pb  = float(data.get("b_act_power") or 0.0)
-                vc  = float(data.get("c_voltage")   or 0.0)
-                ic  = float(data.get("c_current")   or 0.0)
-                pc  = float(data.get("c_act_power") or 0.0)
-                tot = float(data.get("total_act_power") or (pa + pb + pc))
+                data = resp.json() or {}
+                fields = [("voltageA", num(data, "a_voltage"),   "V"),
+                          ("currentA", num(data, "a_current"),   "A"),
+                          ("powerA",   num(data, "a_act_power"), "W"),
+                          ("voltageB", num(data, "b_voltage"),   "V"),
+                          ("currentB", num(data, "b_current"),   "A"),
+                          ("powerB",   num(data, "b_act_power"), "W"),
+                          ("voltageC", num(data, "c_voltage"),   "V"),
+                          ("currentC", num(data, "c_current"),   "A"),
+                          ("powerC",   num(data, "c_act_power"), "W")]
+                tot = num(data, "total_act_power")
+                if tot is None:
+                    phases = [num(data, f"{p}_act_power") for p in ("a", "b", "c")]
+                    if all(v is not None for v in phases):
+                        tot = float(sum(phases))
             else:
                 resp = self._rget(f"http://{ip}/rpc/EM1.GetStatus?id={chan}")
                 resp.raise_for_status()
-                data = resp.json()
-                va  = float(data.get("voltage")   or 0.0)
-                ia  = float(data.get("current")   or 0.0)
-                pa  = float(data.get("act_power") or 0.0)
-                vb  = ib = pb = vc = ic = pc = 0.0
-                tot = pa
+                data = resp.json() or {}
+                tot  = num(data, "act_power")
+                # A single-phase clamp has no B or C phase: those stay at 0, as
+                # they always have, because there is nothing to measure.
+                fields = [("voltageA", num(data, "voltage"), "V"),
+                          ("currentA", num(data, "current"), "A"),
+                          ("powerA",   tot,                  "W"),
+                          ("voltageB", 0.0, "V"), ("currentB", 0.0, "A"), ("powerB", 0.0, "W"),
+                          ("voltageC", 0.0, "V"), ("currentC", 0.0, "A"), ("powerC", 0.0, "W")]
 
             emdata   = {}
             total_wh = None
@@ -5241,19 +5280,18 @@ class Plugin(indigo.PluginBase):
             except Exception:
                 pass
 
-            kv = [
-                {"key": "sensorValue",       "value": round(tot, 1), "uiValue": f"{tot:.1f} W"},
-                {"key": "voltageA",         "value": va,  "uiValue": f"{va:.1f} V"},
-                {"key": "currentA",         "value": ia,  "uiValue": f"{ia:.3f} A"},
-                {"key": "powerA",           "value": pa,  "uiValue": f"{pa:.1f} W"},
-                {"key": "voltageB",         "value": vb,  "uiValue": f"{vb:.1f} V"},
-                {"key": "currentB",         "value": ib,  "uiValue": f"{ib:.3f} A"},
-                {"key": "powerB",           "value": pb,  "uiValue": f"{pb:.1f} W"},
-                {"key": "voltageC",         "value": vc,  "uiValue": f"{vc:.1f} V"},
-                {"key": "currentC",         "value": ic,  "uiValue": f"{ic:.3f} A"},
-                {"key": "powerC",           "value": pc,  "uiValue": f"{pc:.1f} W"},
-            ]
-            mirror = {"watts": f"{tot:.1f}"}
+            kv     = []
+            mirror = {}
+            if tot is not None:
+                kv.append({"key": "sensorValue", "value": round(tot, 1), "uiValue": f"{tot:.1f} W"})
+                mirror["watts"] = f"{tot:.1f}"
+            else:
+                self.logger.debug(f'[{dev.name}] no power figure this poll - last reading kept')
+            for key, value, unit in fields:
+                if value is None:
+                    continue
+                shown = f"{value:.3f} A" if unit == "A" else f"{value:.1f} {unit}"
+                kv.append({"key": key, "value": value, "uiValue": shown})
 
             # Energy is cumulative — skip on a missing/failed EMData read rather than
             # fabricating a 0 that would zero the baseline (phantom kWh spike).
@@ -5269,8 +5307,10 @@ class Plugin(indigo.PluginBase):
             else:
                 self.logger.debug(f'[{dev.name}] no EMData/EM1Data total this poll — energy preserved')
 
-            dev.updateStatesOnServer(kv)
-            self._mirror_states(dev, mirror)
+            if kv:
+                dev.updateStatesOnServer(kv)
+            if mirror:
+                self._mirror_states(dev, mirror)
             self._capture_unhandled_fields(dev, data)
             if emdata:
                 self._capture_unhandled_fields(
@@ -5560,6 +5600,9 @@ class Plugin(indigo.PluginBase):
         was_failing = self.fail_count.get(dev.id, 0) > 0
         self.last_seen[dev.id]  = time.time()
         self.fail_count[dev.id] = 0          # reset consecutive failure counter
+        unconfirmed = getattr(self, "_unconfirmed", None)
+        if unconfirmed is not None:
+            unconfirmed.discard(dev.id)      # v4.3.6: readings are live again
         if was_failing:
             # A device that has been away may have come back at a different
             # address, or another device may now hold its old one. Check identity
@@ -5749,8 +5792,14 @@ class Plugin(indigo.PluginBase):
         count = self.fail_count.get(dev.id, 0) + 1
         self.fail_count[dev.id] = count
         self.last_polled[dev.id] = time.time()
-        if count >= 3:
+        # v4.3.6: a device that has not answered once since it started is
+        # offline on its FIRST failure -- its readings are from before the
+        # restart and must not keep looking live for three more polls. The
+        # failure count (and so the back-off and relocate below) is unchanged.
+        unconfirmed = dev.id in getattr(self, "_unconfirmed", ())
+        if count >= 3 or unconfirmed:
             self._mark_offline(dev, reason)
+        if count >= 3:
             # v3.16.0: it may simply have moved. Quiet and heavily throttled —
             # a plug switched off at the wall must not cost anything.
             self._try_relocate(dev)
