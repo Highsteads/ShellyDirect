@@ -25,6 +25,15 @@
 #     Each Shelly's MAC is re-read at its address before anything is created.
 #   * Discover Shelly Devices is unchanged and still creates everything.
 #     tests/test_v440_discovered_devices.py.
+#   * Gen 4 relays and dimmers get dynamic input0/input1... states and
+#     inputReadVia. Switch-type inputs: Input.GetStatus state. Button-type
+#     inputs (state null over RPC): read over Modbus TCP when the user has
+#     enabled Modbus on the Shelly -- read-only (functions 2 and 4), MAC
+#     checked over Modbus first, 10 min back-off after a failure; also
+#     btn_down / btn_up on the live link. An input that cannot be read is
+#     never written. Register map from Shelly's Modbus and Input API pages;
+#     unit id 1 and MAC byte order follow berkinet/shelly-indigo's hardware
+#     test. tests/test_v440_modbus_inputs.py.
 #
 # v4.3.6 (01-11-2026): three faults from the 01-11-2026 review.
 #   * _poll_detail stamps last_detail on FAILURE too. It used to stamp only on
@@ -570,8 +579,10 @@ import json
 import logging
 import os
 import re
+import socket
 import socketserver
 import stat
+import struct
 import sys as _sys
 import tempfile
 import threading
@@ -1669,6 +1680,146 @@ def channel_owner(entry, spec, assigned):
             return assigned[(ident, chan)]
     return None
 
+
+# ── Gen 4 input reading over Modbus TCP (v4.4.0) ─────────────────────────────
+# A Shelly input set to "button" reports state null over RPC (Shelly Input API:
+# "null if the input instance is stateless, i.e. for type button"), so whether
+# the button is held down cannot be read that way. Gen 4 firmware also exposes
+# each input as a Modbus discrete input ("Currently available only on Gen4
+# devices"), readable once the user has enabled Modbus on the Shelly.
+#
+# Everything here is READ-ONLY: function 4 (read input registers) and function
+# 2 (read discrete inputs). The plugin never enables Modbus and never writes.
+#
+# From Shelly's Modbus and Input API pages (checked 02-11-2026):
+#   * TCP port 502;
+#   * input registers 30000-30005: device MAC, 12 ASCII bytes -> protocol
+#     address 0, 6 registers;
+#   * discrete input address = 100 + input_id * 10.
+# NOT documented by Shelly: the unit id, and the byte order of the ASCII
+# characters inside each 16-bit register. Unit 1 and "either order" follow
+# berkinet/shelly-indigo, whose hardware test on a Gen 4 read the MAC this way
+# (their docs/hardware-validation.md, 2 November 2026). Worth verifying on
+# your own Gen 4 before relying on it.
+
+MODBUS_PORT          = 502
+MODBUS_UNIT_ID       = 1
+MODBUS_TIMEOUT       = 1.5    # whole exchange, seconds
+MODBUS_FN_DISCRETE   = 2      # read discrete inputs
+MODBUS_FN_INPUT_REGS = 4      # read input registers
+MODBUS_MAC_ADDRESS   = 0      # documented as register 30000
+MODBUS_MAC_REGISTERS = 6      # 12 ASCII bytes
+MODBUS_INPUT_OFFSET  = 100
+MODBUS_INPUT_SIZE    = 10
+MODBUS_RETRY_SECS    = 600    # after a failed read, leave Modbus alone this long
+MODBUS_CONFIG_SECS   = 600    # how long a Modbus.GetConfig answer is trusted
+
+# Device types whose Gen 4 models get input0/input1... states (v4.4.0).
+INPUT_TRACK_TYPES = ("shellyRelay", "shellyDimmer")
+
+
+class ModbusError(Exception):
+    """A Modbus reply that cannot be trusted. Never turned into a reading."""
+
+
+def modbus_input_address(input_id):
+    """Discrete-input address of Shelly input `input_id` (Shelly Input API)."""
+    i = int(input_id)
+    if i < 0:
+        raise ValueError(f"input id {input_id} is negative")
+    address = MODBUS_INPUT_OFFSET + i * MODBUS_INPUT_SIZE
+    if address > 0xFFFF:
+        raise ValueError(f"input id {input_id} is beyond the Modbus address range")
+    return address
+
+
+def modbus_request(transaction, function, address, count, unit=MODBUS_UNIT_ID):
+    """One Modbus TCP read request: MBAP header + PDU (12 bytes)."""
+    return struct.pack(">HHHBBHH", transaction & 0xFFFF, 0, 6, unit,
+                       function, address, count)
+
+
+def modbus_check_reply(transaction, function, count, header, body):
+    """The data bytes of a read reply, or ModbusError for anything unexpected:
+    another transaction, an exception reply, or a size that does not match
+    what was asked for."""
+    if len(header) != 7:
+        raise ModbusError("short Modbus header")
+    tid, proto, length, _unit = struct.unpack(">HHHB", header)
+    if tid != (transaction & 0xFFFF) or proto != 0:
+        raise ModbusError("Modbus reply is for another request")
+    if len(body) != length - 1 or len(body) < 2:
+        raise ModbusError("Modbus reply length does not match its header")
+    if body[0] == (function | 0x80):
+        raise ModbusError(f"Shelly refused the Modbus read (exception code {body[1]})")
+    if body[0] != function:
+        raise ModbusError("Modbus reply is for another function")
+    want = count * 2 if function == MODBUS_FN_INPUT_REGS else (count + 7) // 8
+    if body[1] != want or len(body) != want + 2:
+        raise ModbusError("Modbus reply carries the wrong amount of data")
+    return bytes(body[2:])
+
+
+def modbus_mac_candidates(data):
+    """The MAC the MAC registers spell, in both byte orders within a register."""
+    data    = bytes(data)
+    swapped = b"".join(data[i:i + 2][::-1] for i in range(0, len(data), 2))
+    found   = {normalise_mac(raw.decode("ascii", errors="replace")) for raw in (data, swapped)}
+    found.discard("")
+    return found
+
+
+def modbus_read_inputs(host, expected_mac, input_ids, timeout=MODBUS_TIMEOUT, connect=None):
+    """{input_id: bool} read from the Shelly at host, read-only.
+
+    The Shelly's MAC is read first and must be expected_mac, so a reading is
+    never taken from a different box that now holds this address. Raises
+    ValueError, OSError (including timeouts) or ModbusError on any problem;
+    the caller then writes nothing.
+    """
+    expected = normalise_mac(expected_mac)
+    if not expected:
+        raise ValueError("no MAC stored for this device, so its Modbus reply cannot be checked")
+    ids = sorted({int(i) for i in input_ids})
+    if not ids:
+        return {}
+    addresses = {i: modbus_input_address(i) for i in ids}
+    connect   = connect or socket.create_connection
+    deadline  = time.monotonic() + float(timeout)
+
+    with connect((host, MODBUS_PORT), timeout=timeout) as sock:
+        def _time_left():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("Modbus read timed out")
+            sock.settimeout(left)
+
+        def _recv_exact(size):
+            got = b""
+            while len(got) < size:
+                _time_left()
+                part = sock.recv(size - len(got))
+                if not part:
+                    raise ConnectionError("Shelly closed the Modbus connection")
+                got += part
+            return got
+
+        def _ask(transaction, function, address, count):
+            _time_left()
+            sock.sendall(modbus_request(transaction, function, address, count))
+            header = _recv_exact(7)
+            length = struct.unpack(">H", header[4:6])[0]
+            if not 3 <= length <= 254:
+                raise ModbusError("Modbus reply length is out of range")
+            body = _recv_exact(length - 1)
+            return modbus_check_reply(transaction, function, count, header, body)
+
+        mac_data = _ask(1, MODBUS_FN_INPUT_REGS, MODBUS_MAC_ADDRESS, MODBUS_MAC_REGISTERS)
+        if expected not in modbus_mac_candidates(mac_data):
+            raise ModbusError(f"the Shelly answering Modbus at {host} is not {expected}")
+        return {i: bool(_ask(2 + n, MODBUS_FN_DISCRETE, addresses[i], 1)[0] & 1)
+                for n, i in enumerate(ids)}
+
 # Shelly RPC payload keys handled directly by the per-type _poll_* methods.
 # Anything NOT in this set is captured as a dynamic state by
 # _capture_unhandled_fields().  This is a UNION across all device types;
@@ -1853,6 +2004,13 @@ class Plugin(indigo.PluginBase):
         self._probing          = set()# ips with a probe in flight
         self._scan_running     = False
         self._create_lock      = threading.Lock()   # one Create Indigo Devices run at a time
+
+        # ── v4.4.0 Gen 4 input states (Modbus read-only) ────────────────────
+        self._gen_cache        = {}   # {ip: (ts, gen int or None)}
+        self._input_cfg        = {}   # {(ip, input_id): (ts, Input.GetConfig dict)}
+        self._modbus_cfg       = {}   # {ip: (ts, Modbus enabled bool)}
+        self._modbus_backoff   = {}   # {ip: ts of the last failed Modbus read}
+        self._modbus_warned    = set()# ips whose Modbus identity refusal was reported
         self._load_price_prefs(prefs)
 
         log_level = self._pref_int(prefs, "logLevel", logging.INFO)
@@ -4910,17 +5068,35 @@ class Plugin(indigo.PluginBase):
                             self._apply_relay_status(dev, self._link_status[dev.id])
                         else:
                             self._link_dirty.setdefault(dev.id, now)
+                # v4.4.0: a switch-type input changing (its state is a bool;
+                # a button input's is null and arrives as btn_down / btn_up).
+                for comp, delta in params.items():
+                    if (str(comp).startswith("input:") and isinstance(delta, dict)
+                            and isinstance(delta.get("state"), bool)):
+                        try:
+                            inp = int(str(comp).split(":", 1)[1])
+                        except ValueError:
+                            continue
+                        self._link_input_edge(devs, ip, inp, delta["state"], via="Shelly")
             elif method == "NotifyEvent":
                 for event in params.get("events", []) or []:
-                    self._link_event(devs, event)
+                    self._link_event(devs, event, ip)
         except Exception as exc:
             self.logger.debug(f"live link {ip}: message not applied: {exc}")
 
-    def _link_event(self, devs, event):
+    def _link_event(self, devs, event, ip=None):
         """A button press pushed over the live link -> the same trigger the
-        webhook used to fire (the webhook is ignored while the link is live)."""
+        webhook used to fire (the webhook is ignored while the link is live).
+        v4.4.0: btn_down / btn_up also set a Gen 4 device's input state."""
         comp  = str(event.get("component", ""))
-        press = _PRESS_WORDS.get(str(event.get("event", "")))
+        raw   = str(event.get("event", ""))
+        if ip and raw in ("btn_down", "btn_up") and comp.startswith("input:"):
+            try:
+                self._link_input_edge(devs, ip, int(comp.split(":")[1]), raw == "btn_down")
+            except (IndexError, ValueError):
+                pass
+            return
+        press = _PRESS_WORDS.get(raw)
         if not comp.startswith("input:") or not press:
             return
         try:
@@ -4995,6 +5171,7 @@ class Plugin(indigo.PluginBase):
             data = resp.json()
             self._apply_relay_status(dev, data, ip=ip if addon_temp else None)
             self.last_polled[dev.id] = time.time()
+            self._poll_inputs(dev, ip)          # v4.4.0, Gen 4 only, never raises
 
         except requests.exceptions.ConnectionError:
             self._poll_failed(dev, f"no route to {ip}")
@@ -5080,6 +5257,168 @@ class Plugin(indigo.PluginBase):
         self._mirror_states(dev, mirror)
         self._capture_unhandled_fields(dev, data)
         self._mark_online(dev)
+
+    # ── Gen 4 input states (v4.4.0) ──────────────────────────────────────────
+    # A Gen 4 relay or dimmer gets one state per input it owns, input0, input1
+    # ..., True while the input is closed, plus inputReadVia saying how it was
+    # read. A switch-type input is read over RPC (its state is a plain bool).
+    # A button-type input reports null over RPC; it is read over Modbus when
+    # the user has enabled Modbus on the Shelly, and otherwise follows the
+    # btn_down / btn_up events on the live connection. Nothing is ever
+    # written for an input that could not be read: an unknown input is not
+    # shown as off. The states are dynamic (_capture_unhandled_fields), so
+    # they appear only on devices that have them.
+
+    def _device_gen(self, ip, max_age=21600):
+        """The Shelly's generation (2, 3, 4) from Shelly.GetDeviceInfo, cached
+        for six hours. None when it could not be asked."""
+        now = time.time()
+        hit = self._gen_cache.get(ip)
+        if hit and (now - hit[0]) < max_age:
+            return hit[1]
+        gen = None
+        try:
+            resp = self._rget(f"http://{ip}/rpc/Shelly.GetDeviceInfo", timeout=2)
+            if resp.status_code == 200:
+                gen = int((resp.json() or {}).get("gen"))
+        except Exception as exc:
+            self.logger.debug(f"generation of {ip}: {exc}")
+            return None          # not cached: ask again next poll
+        self._gen_cache[ip] = (now, gen)
+        return gen
+
+    def _input_ids_for(self, dev, ip):
+        """The Shelly input ids this Indigo device owns. A relay owns the
+        input with its own channel number (input:0 with switch:0, input:1 with
+        switch:1, Shelly's default pairing); a dimmer owns every input."""
+        comps = self._device_components(ip)
+        if not comps:
+            return []
+        present = sorted(int(k.split(":", 1)[1]) for k in comps
+                         if k.startswith("input:") and k.split(":", 1)[1].isdigit())
+        if dev.deviceTypeId == "shellyRelay":
+            chan = self._pref_int(dev.pluginProps, "channel_id", 0)
+            return [chan] if chan in present else []
+        return present
+
+    def _input_config(self, ip, input_id, max_age=21600):
+        """Input.GetConfig for one input, cached six hours. {} if unknown."""
+        now = time.time()
+        hit = self._input_cfg.get((ip, input_id))
+        if hit and (now - hit[0]) < max_age:
+            return hit[1]
+        try:
+            resp = self._rget(f"http://{ip}/rpc/Input.GetConfig?id={input_id}", timeout=2)
+            resp.raise_for_status()
+            cfg = resp.json() or {}
+        except Exception as exc:
+            self.logger.debug(f"input {input_id} config of {ip}: {exc}")
+            return {}
+        self._input_cfg[(ip, input_id)] = (now, cfg)
+        return cfg
+
+    def _modbus_enabled(self, ip):
+        """Whether the user has turned Modbus on for this Shelly
+        (Modbus.GetConfig "enable"), cached ten minutes. The plugin never
+        turns it on itself."""
+        now = time.time()
+        hit = self._modbus_cfg.get(ip)
+        if hit and (now - hit[0]) < MODBUS_CONFIG_SECS:
+            return hit[1]
+        enabled = False
+        try:
+            resp = self._rget(f"http://{ip}/rpc/Modbus.GetConfig", timeout=2)
+            if resp.status_code == 200:
+                enabled = bool((resp.json() or {}).get("enable", False))
+        except Exception as exc:
+            self.logger.debug(f"Modbus config of {ip}: {exc}")
+        self._modbus_cfg[ip] = (now, enabled)
+        return enabled
+
+    @staticmethod
+    def _is_plain_button(cfg):
+        """A button input Modbus can be trusted for: enabled, type button and
+        not inverted (whether the Modbus bit honours 'invert' is not
+        documented, so an inverted input is left to the events)."""
+        return (cfg.get("type") == "button" and cfg.get("enable", True) is not False
+                and not cfg.get("invert", False))
+
+    def _poll_inputs(self, dev, ip):
+        """After a good poll: write the Gen 4 input states. Never raises and
+        never touches the device's online verdict."""
+        if dev.deviceTypeId not in INPUT_TRACK_TYPES or getattr(self, "_gen_cache", None) is None:
+            return
+        try:
+            if self._device_gen(ip) != 4:
+                return
+            fields, buttons, via = {}, [], set()
+            for i in self._input_ids_for(dev, ip):
+                resp = self._rget(f"http://{ip}/rpc/Input.GetStatus?id={i}", timeout=2)
+                if resp.status_code != 200:
+                    continue
+                state = (resp.json() or {}).get("state")
+                if isinstance(state, bool):
+                    fields[f"input{i}"] = state
+                    via.add("Shelly")
+                elif self._is_plain_button(self._input_config(ip, i)):
+                    buttons.append(i)
+            if buttons:
+                sampled = self._modbus_sample(dev, ip, buttons)
+                if sampled:
+                    for i, state in sampled.items():
+                        fields[f"input{i}"] = state
+                    via.add("Modbus")
+                else:
+                    via.add("button presses")
+            if via:
+                fields["inputReadVia"] = " and ".join(sorted(via))
+            if fields:
+                self._capture_unhandled_fields(dev, fields)
+        except Exception as exc:
+            self.logger.debug(f'[{dev.name}] input read skipped: {exc}')
+
+    def _modbus_sample(self, dev, ip, input_ids):
+        """{input_id: bool} over Modbus, or {} (Modbus off, backing off after
+        a failure, no MAC stored, or the read failed)."""
+        now = time.time()
+        if (now - self._modbus_backoff.get(ip, 0)) < MODBUS_RETRY_SECS:
+            return {}
+        if not self._modbus_enabled(ip):
+            return {}
+        mac = dev.pluginProps.get("mac_address", "")
+        try:
+            result = modbus_read_inputs(ip, mac, input_ids)
+        except ModbusError as exc:
+            self._modbus_backoff[ip] = now
+            if "is not" in str(exc) and ip not in self._modbus_warned:
+                self._modbus_warned.add(ip)
+                log(f'[{dev.name}] Modbus input read refused: {exc}. Its input '
+                    f'state is not being read over Modbus.', level="WARNING")
+            else:
+                self.logger.debug(f'[{dev.name}] Modbus read failed: {exc}')
+            return {}
+        except (OSError, ValueError) as exc:
+            self._modbus_backoff[ip] = now
+            self.logger.debug(f'[{dev.name}] Modbus read failed: {exc}')
+            return {}
+        self._modbus_warned.discard(ip)
+        return result
+
+    def _link_input_edge(self, devs, ip, inp, held, via="button presses"):
+        """An input change over the live connection (btn_down / btn_up, or a
+        switch input's NotifyStatus) -> input<N> at once, for Gen 4 devices
+        whose generation is already known (no network on the link thread)."""
+        hit = getattr(self, "_gen_cache", {}).get(ip)
+        if not hit or hit[1] != 4:
+            return
+        for dev in devs:
+            if dev.deviceTypeId not in INPUT_TRACK_TYPES:
+                continue
+            if (dev.deviceTypeId == "shellyRelay"
+                    and self._pref_int(dev.pluginProps, "channel_id", 0) != inp):
+                continue
+            self._capture_unhandled_fields(dev, {f"input{inp}": bool(held),
+                                                 "inputReadVia": via})
 
     # Fields worth keeping out of Shelly.GetStatus. Deliberately NOT everything
     # the box reports: ram_free, fs_free and the *_rev counters change on almost
@@ -5304,6 +5643,7 @@ class Plugin(indigo.PluginBase):
             self._capture_unhandled_fields(dev, data)
             self._mark_online(dev)
             self.last_polled[dev.id] = time.time()
+            self._poll_inputs(dev, ip)          # v4.4.0, Gen 4 only, never raises
 
         except requests.exceptions.ConnectionError:
             self._poll_failed(dev, f"no route to {ip}")

@@ -54,6 +54,17 @@ The power, voltage, current, energy and temperature readings only appear when **
 
 **Last Switched By** shows one of: **Indigo**, **the button on the device**, **the switch wired to the device**, **the Shelly app**, **the device's own timer**, **the device starting up** (after a power cut), **a script on the device**, **a schedule on the device**, **a safety limit on the device**, or **another app on the network** (anything else that sent it a command). If the Shelly ever reports something the plugin does not know, it is shown in quotes, as the Shelly gave it. It only changes when the output actually switches.
 
+### Inputs on Gen 4 relays and dimmers
+
+A Gen 4 Shelly relay or dimmer also has an **input0** state, and **input1** and so on if it has more inputs. It is on while the switch or button wired to that input is closed. On a Shelly with two outputs, each output's device shows its own input. A dimmer shows all of its inputs.
+
+- If the input is set as a **switch** in the Shelly's settings, the Shelly reports it. The state changes straight away over the plugin's live connection, or at the next poll if the live connection is off.
+- If the input is set as a **button**, the Shelly does not report whether it is being held. The plugin then reads it over **Modbus**, if you have switched Modbus on in the Shelly's own web page (**Settings → Modbus**). The plugin only reads over Modbus: it never switches Modbus on and never changes anything on the Shelly. Without Modbus, the state follows the button being pressed and released while the plugin's live connection is on.
+- An input the plugin cannot read stays blank rather than showing off.
+- **inputReadVia** says how the input was read: **Shelly**, **Modbus** or **button presses**.
+
+Before it uses a Modbus reading, the plugin checks that the Shelly answering is the one it expects, by its MAC address. If it is a different Shelly, the plugin says so once in the Event Log and does not use the reading. Gen 2 and Gen 3 Shellys cannot report their inputs over Modbus, so they do not get these states.
+
 ## Shelly Cover / Roller
 
 For a blind, shutter or gate driven by a two-output Shelly in cover mode. **Turn On** opens it, **Turn Off** closes it and **Toggle** does whichever is the opposite of now. The [Actions and triggers](actions-and-triggers.md) page lists the actions for stopping it, sending it to a position and tilting the slats.
