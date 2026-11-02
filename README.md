@@ -2,7 +2,7 @@
 
 **Control and watch the Shelly Plus, Pro, Gen 3 and Gen 4 range from Indigo, straight over your home network.**
 
-**Version:** 4.3.6 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
+**Version:** 4.4.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
 
 **[Read the full guide](https://highsteads.github.io/ShellyDirect/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -48,12 +48,14 @@ For the older Gen 1 Shellys, such as the original Shelly 1, use my other plugin,
 ## Setting it up
 
 1. Open **Plugins → Shelly Direct → Configure**, fill in **Indigo Server IP** with the network address of the Mac that runs Indigo, and **Discovery Subnets** with the first three numbers of your Shellys' addresses, such as `192.168.1`. Click **Save**.
-2. Choose **Plugins → Shelly Direct → Discover Shelly Devices**. The plugin scans your network and creates a device for each Shelly it finds, in a device folder called **ShellyDirect**.
+2. Choose **Plugins → Shelly Direct → Discover Shelly Devices**. The plugin scans your network and creates a device for each Shelly it finds, in a device folder called **ShellyDirect**. To choose which Shellys to add instead, use **Plugins → Shelly Direct → Create Indigo Devices...**.
 3. Switch a plug with its own button or the Shelly app, and Indigo should show the change straight away.
 
 Battery sensors sleep, so discovery usually misses them. Add those by hand with **New Device**. The [full guide](https://highsteads.github.io/ShellyDirect/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v4.4.0** — Choose which Shellys become Indigo devices. The plugin now notices Shellys on your network by itself without creating anything. **New Device** has a **Discovered Shelly** menu: pick a Shelly from it and the address and channel are filled in for you. It only lists channels that are not already an Indigo device. A new menu item, **Plugins → Shelly Direct → Create Indigo Devices...**, creates devices for one Shelly or all of them, only for the kinds you tick, and skips anything you already have. **Discover Shelly Devices** works exactly as before. Gen 4 relays and dimmers also gain an **input0** state that shows when the switch or button wired to them is closed, read over Modbus for a button input if you have switched Modbus on in the Shelly's settings.
 
 **v4.3.6** — Readings that look live are live. After Indigo or the Mac restarts, a Shelly that does not answer is now shown as offline straight away, instead of showing its last power reading from before the restart as if it were current for a minute or more. One Shelly that stops answering no longer slows down the polling of all the others. A Shelly Pro EM or 3EM that leaves a figure out of its reply no longer has it recorded as 0 W; the last real reading is kept.
 

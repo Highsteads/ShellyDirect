@@ -10,6 +10,20 @@
 	<Device type="relay" id="shellyRelay">
 		<Name>Shelly Relay</Name>
 		<ConfigUI>
+			<Field id="shelly_pick" type="menu" defaultValue="_none_">
+				<Label>Discovered Shelly:</Label>
+				<List class="self" method="getDiscoveredChannels" dynamicReload="true"/>
+				<CallbackMethod>discoveredChannelPicked</CallbackMethod>
+			</Field>
+			<Field id="shelly_pick_refresh" type="button">
+				<Label/>
+				<Title>Refresh Discovered Shellys</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpPick" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys found on the network whose channel is not yet an Indigo device. Picking one fills in the address and channel below. You can still type the address yourself.</Label>
+			</Field>
+			<Field id="sepPick" type="separator"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -209,6 +223,20 @@
 	<Device type="relay" id="shellyUni">
 		<Name>Shelly Plus Uni</Name>
 		<ConfigUI>
+			<Field id="shelly_pick" type="menu" defaultValue="_none_">
+				<Label>Discovered Shelly:</Label>
+				<List class="self" method="getDiscoveredChannels" dynamicReload="true"/>
+				<CallbackMethod>discoveredChannelPicked</CallbackMethod>
+			</Field>
+			<Field id="shelly_pick_refresh" type="button">
+				<Label/>
+				<Title>Refresh Discovered Shellys</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpPick" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys found on the network whose channel is not yet an Indigo device. Picking one fills in the address and channel below. You can still type the address yourself.</Label>
+			</Field>
+			<Field id="sepPick" type="separator"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -291,6 +319,20 @@
 	<Device type="relay" id="shellyCover">
 		<Name>Shelly Cover / Roller</Name>
 		<ConfigUI>
+			<Field id="shelly_pick" type="menu" defaultValue="_none_">
+				<Label>Discovered Shelly:</Label>
+				<List class="self" method="getDiscoveredChannels" dynamicReload="true"/>
+				<CallbackMethod>discoveredChannelPicked</CallbackMethod>
+			</Field>
+			<Field id="shelly_pick_refresh" type="button">
+				<Label/>
+				<Title>Refresh Discovered Shellys</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpPick" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys found on the network whose channel is not yet an Indigo device. Picking one fills in the address and channel below. You can still type the address yourself.</Label>
+			</Field>
+			<Field id="sepPick" type="separator"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -381,6 +423,20 @@
 	<Device type="dimmer" id="shellyDimmer">
 		<Name>Shelly Dimmer</Name>
 		<ConfigUI>
+			<Field id="shelly_pick" type="menu" defaultValue="_none_">
+				<Label>Discovered Shelly:</Label>
+				<List class="self" method="getDiscoveredChannels" dynamicReload="true"/>
+				<CallbackMethod>discoveredChannelPicked</CallbackMethod>
+			</Field>
+			<Field id="shelly_pick_refresh" type="button">
+				<Label/>
+				<Title>Refresh Discovered Shellys</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpPick" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys found on the network whose channel is not yet an Indigo device. Picking one fills in the address and channel below. You can still type the address yourself.</Label>
+			</Field>
+			<Field id="sepPick" type="separator"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -462,6 +518,20 @@
 		<ConfigUI>
 			<Field id="SupportsOnState" type="checkbox" defaultValue="false" hidden="true"/>
 			<Field id="SupportsSensorValue" type="checkbox" defaultValue="true" hidden="true"/>
+			<Field id="shelly_pick" type="menu" defaultValue="_none_">
+				<Label>Discovered Shelly:</Label>
+				<List class="self" method="getDiscoveredChannels" dynamicReload="true"/>
+				<CallbackMethod>discoveredChannelPicked</CallbackMethod>
+			</Field>
+			<Field id="shelly_pick_refresh" type="button">
+				<Label/>
+				<Title>Refresh Discovered Shellys</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpPick" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys found on the network whose channel is not yet an Indigo device. Picking one fills in the address and channel below. You can still type the address yourself.</Label>
+			</Field>
+			<Field id="sepPick" type="separator"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -509,6 +579,20 @@
 		<ConfigUI>
 			<Field id="SupportsOnState" type="checkbox" defaultValue="true" hidden="true"/>
 			<Field id="SupportsSensorValue" type="checkbox" defaultValue="false" hidden="true"/>
+			<Field id="shelly_pick" type="menu" defaultValue="_none_">
+				<Label>Discovered Shelly:</Label>
+				<List class="self" method="getDiscoveredChannels" dynamicReload="true"/>
+				<CallbackMethod>discoveredChannelPicked</CallbackMethod>
+			</Field>
+			<Field id="shelly_pick_refresh" type="button">
+				<Label/>
+				<Title>Refresh Discovered Shellys</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpPick" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys found on the network whose channel is not yet an Indigo device. Picking one fills in the address and channel below. You can still type the address yourself.</Label>
+			</Field>
+			<Field id="sepPick" type="separator"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -584,6 +668,20 @@
 		<ConfigUI>
 			<Field id="SupportsOnState" type="checkbox" defaultValue="true" hidden="true"/>
 			<Field id="SupportsSensorValue" type="checkbox" defaultValue="false" hidden="true"/>
+			<Field id="shelly_pick" type="menu" defaultValue="_none_">
+				<Label>Discovered Shelly:</Label>
+				<List class="self" method="getDiscoveredChannels" dynamicReload="true"/>
+				<CallbackMethod>discoveredChannelPicked</CallbackMethod>
+			</Field>
+			<Field id="shelly_pick_refresh" type="button">
+				<Label/>
+				<Title>Refresh Discovered Shellys</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpPick" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys found on the network whose channel is not yet an Indigo device. Picking one fills in the address and channel below. You can still type the address yourself.</Label>
+			</Field>
+			<Field id="sepPick" type="separator"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -617,6 +715,20 @@
 		<ConfigUI>
 			<Field id="SupportsOnState" type="checkbox" defaultValue="true" hidden="true"/>
 			<Field id="SupportsSensorValue" type="checkbox" defaultValue="false" hidden="true"/>
+			<Field id="shelly_pick" type="menu" defaultValue="_none_">
+				<Label>Discovered Shelly:</Label>
+				<List class="self" method="getDiscoveredChannels" dynamicReload="true"/>
+				<CallbackMethod>discoveredChannelPicked</CallbackMethod>
+			</Field>
+			<Field id="shelly_pick_refresh" type="button">
+				<Label/>
+				<Title>Refresh Discovered Shellys</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpPick" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys found on the network whose channel is not yet an Indigo device. Picking one fills in the address and channel below. You can still type the address yourself.</Label>
+			</Field>
+			<Field id="sepPick" type="separator"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -651,6 +763,20 @@
 		<ConfigUI>
 			<Field id="SupportsOnState" type="checkbox" defaultValue="false" hidden="true"/>
 			<Field id="SupportsSensorValue" type="checkbox" defaultValue="true" hidden="true"/>
+			<Field id="shelly_pick" type="menu" defaultValue="_none_">
+				<Label>Discovered Shelly:</Label>
+				<List class="self" method="getDiscoveredChannels" dynamicReload="true"/>
+				<CallbackMethod>discoveredChannelPicked</CallbackMethod>
+			</Field>
+			<Field id="shelly_pick_refresh" type="button">
+				<Label/>
+				<Title>Refresh Discovered Shellys</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpPick" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys found on the network whose channel is not yet an Indigo device. Picking one fills in the address and channel below. You can still type the address yourself.</Label>
+			</Field>
+			<Field id="sepPick" type="separator"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>
@@ -879,6 +1005,20 @@
 	<Device type="dimmer" id="shellyRGBW">
 		<Name>Shelly RGBW</Name>
 		<ConfigUI>
+			<Field id="shelly_pick" type="menu" defaultValue="_none_">
+				<Label>Discovered Shelly:</Label>
+				<List class="self" method="getDiscoveredChannels" dynamicReload="true"/>
+				<CallbackMethod>discoveredChannelPicked</CallbackMethod>
+			</Field>
+			<Field id="shelly_pick_refresh" type="button">
+				<Label/>
+				<Title>Refresh Discovered Shellys</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpPick" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys found on the network whose channel is not yet an Indigo device. Picking one fills in the address and channel below. You can still type the address yourself.</Label>
+			</Field>
+			<Field id="sepPick" type="separator"/>
 			<Field id="ip_address" type="textfield" defaultValue="">
 				<Label>IP Address:</Label>
 			</Field>

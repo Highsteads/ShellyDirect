@@ -6,6 +6,55 @@
 		<CallbackMethod>menuDiscoverDevices</CallbackMethod>
 	</MenuItem>
 
+	<MenuItem id="menuCreateDiscovered">
+		<Name>Create Indigo Devices...</Name>
+		<ButtonTitle>Create Devices</ButtonTitle>
+		<CallbackMethod>menuCreateDiscoveredDevices</CallbackMethod>
+		<ConfigUI>
+			<Field id="shelly_choice" type="menu" defaultValue="_all_">
+				<Label>Shelly:</Label>
+				<List class="self" method="getDiscoveredShellys" dynamicReload="true"/>
+			</Field>
+			<Field id="btnRefresh" type="button">
+				<Label/>
+				<Title>Refresh List</Title>
+				<CallbackMethod>refreshDiscoveredShellys</CallbackMethod>
+			</Field>
+			<Field id="btnScan" type="button">
+				<Label/>
+				<Title>Scan Subnets (creates nothing)</Title>
+				<CallbackMethod>menuScanForShellys</CallbackMethod>
+			</Field>
+			<Field id="hlpFind" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Shellys are found by mDNS while the plugin runs. Scan Subnets also checks every address on your Discovery Subnets and takes about a minute; click Refresh List when the Event Log says it has finished. Nothing is created until you click Create Devices.</Label>
+			</Field>
+			<Field id="sepKinds" type="separator"/>
+			<Field id="inc_relays" type="checkbox" defaultValue="true">
+				<Label>Relays and plugs:</Label>
+				<Description>Shelly Relay and Shelly Uni</Description>
+			</Field>
+			<Field id="inc_covers" type="checkbox" defaultValue="true">
+				<Label>Covers:</Label>
+				<Description>Blinds, shutters and garage doors (cover profile)</Description>
+			</Field>
+			<Field id="inc_lights" type="checkbox" defaultValue="true">
+				<Label>Lights:</Label>
+				<Description>Dimmers and RGBW</Description>
+			</Field>
+			<Field id="inc_meters" type="checkbox" defaultValue="true">
+				<Label>Energy meters:</Label>
+				<Description>Pro EM, Pro 3EM and EM Gen 3</Description>
+			</Field>
+			<Field id="inc_sensors" type="checkbox" defaultValue="true">
+				<Label>Sensors:</Label>
+				<Description>H&amp;T, Smoke, Flood and i4 inputs</Description>
+			</Field>
+			<Field id="hlpCreate" type="label" fontSize="mini" alignWithControl="true">
+				<Label>Only channels that are not already an Indigo device are created, with the same names and settings Discover Shelly Devices would give them. Existing devices are not changed. Results are written to the Event Log.</Label>
+			</Field>
+		</ConfigUI>
+	</MenuItem>
+
 	<MenuItem id="menuShowMdns">
 		<Name>Show mDNS Discovered Shellys</Name>
 		<CallbackMethod>menuShowMdns</CallbackMethod>

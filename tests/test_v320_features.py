@@ -113,6 +113,7 @@ def _relay_host(plugin_mod, payload):
         _mirror_states=lambda dev, m: None,
         _capture_unhandled_fields=lambda dev, data, extra_handled=None: None,
         _mark_online=lambda dev: None,
+        _poll_inputs=lambda dev, ip: None,     # v4.4.0 Gen 4 inputs, tested elsewhere
     )
     host._log_activity = plugin_mod.Plugin._log_activity.__get__(host)
     host._fire_trigger = lambda t, d, p=None: host.fired.append((t, d, p))
