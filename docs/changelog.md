@@ -7,6 +7,15 @@ nav_order: 15
 
 The newest version is at the top.
 
+## 4.4.0 — 2 November 2026
+
+**Choose which Shellys become Indigo devices.**
+
+- **The plugin finds your Shellys without creating anything.** While it runs, it notices each Shelly that announces itself on the network and works out what kind of device it is. Nothing is added to Indigo until you ask.
+- **A Discovered Shelly menu in New Device and Edit Device.** It lists the Shellys found that match the device type you chose, leaving out any channel that is already an Indigo device. Picking one fills in the IP address, the channel and the power-monitoring setting. You can still type an address yourself. If another device takes that channel while the dialog is open, saving tells you which device has it.
+- **A new menu item: Plugins → Shelly Direct → Create Indigo Devices...** Pick one Shelly or all of them, tick the kinds of device you want (relays and plugs, covers, lights, energy meters, sensors) and click **Create Devices**. Only channels that are not already an Indigo device are created, with the same names and settings **Discover Shelly Devices** gives them. Before creating anything, the plugin checks that the right Shelly is still at that address. **Scan Subnets** in the same dialog checks every address in your Discovery Subnets, again without creating anything.
+- **Discover Shelly Devices** is unchanged and still creates a device for every new Shelly it finds.
+
 ## 4.3.6 — 1 November 2026
 
 Three faults found by a code review are put right.

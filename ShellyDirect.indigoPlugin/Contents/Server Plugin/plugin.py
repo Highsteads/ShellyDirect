@@ -4,8 +4,27 @@
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
 # Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2, 4.3.4, 4.3.6); Claude Sonnet 5.5 (4.3.3, 4.3.5)
-# Date:        01-11-2026
-# Version:     4.3.6
+# Date:        02-11-2026
+# Version:     4.4.0
+#
+# v4.4.0 (02-11-2026): find Shellys without creating them, then choose.
+#   * Discovered list. Every Shelly mDNS announces is probed once (GetDeviceInfo,
+#     classified by the same code as Discover Shelly Devices, now
+#     _classify_shelly) and remembered by MAC. Nothing is created. Re-probed
+#     after 6 h or when its address changes. Create Indigo Devices... can also
+#     run a probe-only scan of the Discovery Subnets (16 threads, 1 s each).
+#   * Device dialogs (all ten IP types) gain a "Discovered Shelly" menu listing
+#     the channels of that type no other Indigo device owns. Picking one fills
+#     IP, channel, PM (and 3-phase). On save the MAC is stored only if the
+#     address and channel still match the pick; a channel taken meanwhile is
+#     refused with the owning device named.
+#   * Plugins -> ShellyDirect -> Create Indigo Devices...: one Shelly or all,
+#     ticked kinds only, free channels only. channel_specs() mirrors the
+#     _discover_thread rules (per-channel devices, cover profile, 3-phase EM)
+#     and a parity test holds the two to the same types, names and props.
+#     Each Shelly's MAC is re-read at its address before anything is created.
+#   * Discover Shelly Devices is unchanged and still creates everything.
+#     tests/test_v440_discovered_devices.py.
 #
 # v4.3.6 (01-11-2026): three faults from the 01-11-2026 review.
 #   * _poll_detail stamps last_detail on FAILURE too. It used to stamp only on
@@ -543,6 +562,7 @@
 # - Plugin version is now read dynamically from Info.plist (self.pluginVersion);
 #   no separate Python constant.
 
+import concurrent.futures
 import csv
 import http.server
 import indigo
@@ -1540,6 +1560,115 @@ def detect_shelly_devices(device_info, config_keys):
         return _mk("shellyI4", [0], False)
     return []
 
+
+# ── Discovered Shellys (v4.4.0) ──────────────────────────────────────────────
+# Shellys found on the network are remembered here WITHOUT creating anything.
+# The device dialogs' "Discovered Shelly" menu and Plugins -> ShellyDirect ->
+# Create Indigo Devices... both read from this list. The older Discover Shelly
+# Devices menu still creates every device it finds, exactly as before.
+
+NO_PICK      = "_none_"   # Indigo menus need a non-empty id for every row
+ALL_SHELLYS  = "_all_"
+
+# How long a probe result is trusted before mDNS may trigger another probe.
+DISCOVERED_REPROBE_SECS = 6 * 3600
+
+# Worker threads for the probe-only subnet scan (each probe is one HTTP GET).
+SCAN_WORKERS = 16
+
+# Create Indigo Devices... checkboxes -> the device types each one covers.
+CREATE_FAMILIES = {
+    "inc_relays":  ("shellyRelay", "shellyUni"),
+    "inc_covers":  ("shellyCover",),
+    "inc_lights":  ("shellyDimmer", "shellyRGBW"),
+    "inc_meters":  ("shellyEM",),
+    "inc_sensors": ("shellyHT", "shellyI4", "shellySmoke", "shellyFlood"),
+}
+
+
+def channel_specs(label, has_pm, base_type, num_ch, cover_mode=False):
+    """The Indigo devices one classified Shelly maps to, one dict per device.
+
+    Mirrors the creation rules in _discover_thread (v3.12-v3.14):
+      * shellyEM with 3 channels is ONE 3-phase meter, not three devices;
+      * any other multi-channel type is one device per channel, " Ch1".. names;
+      * a multi-relay Shelly in cover profile is ONE cover device;
+      * covers poll every 10 s.
+    cover_mode is True / False, or None when the cover probe was inconclusive,
+    in which case nothing is offered (a guess could create the wrong type).
+
+    Each dict: {type_id, channel (int), has_pm, label, suffix, extra (props)}.
+    """
+    try:
+        num_ch = max(1, int(num_ch))
+    except (TypeError, ValueError):
+        num_ch = 1
+    has_pm    = bool(has_pm)
+    em_3phase = (base_type == "shellyEM" and num_ch == 3)
+
+    if num_ch > 1 and not em_3phase:
+        if base_type == "shellyRelay" and cover_mode is None:
+            return []
+        if base_type == "shellyRelay" and cover_mode:
+            return [{"type_id": "shellyCover", "channel": 0, "has_pm": False,
+                     "label": f"{label} Cover", "suffix": "",
+                     "extra": {"poll_interval": "10"}}]
+        specs = []
+        for ch in range(num_ch):
+            extra = {"channel_id": str(ch)}
+            if base_type == "shellyEM":
+                extra["is_3phase"] = False      # multi-channel EM = EM1 components
+            if base_type == "shellyCover":
+                extra["poll_interval"] = "10"
+            specs.append({"type_id": base_type, "channel": ch, "has_pm": has_pm,
+                          "label": label, "suffix": f" Ch{ch + 1}", "extra": extra})
+        return specs
+
+    extra = {}
+    if base_type == "shellyEM":
+        extra["is_3phase"] = em_3phase
+    if base_type == "shellyCover":
+        extra["poll_interval"] = "10"
+    return [{"type_id": base_type, "channel": 0, "has_pm": has_pm,
+             "label": label, "suffix": "", "extra": extra}]
+
+
+def pick_key(mac, type_id, channel):
+    """Menu id for one discovered channel: 'MAC|typeId|channel'."""
+    return f"{normalise_mac(mac)}|{type_id}|{int(channel)}"
+
+
+def parse_pick_key(key):
+    """(MAC, typeId, channel) from pick_key(), or None for anything else."""
+    parts = str(key or "").split("|")
+    if len(parts) != 3 or not parts[0] or not parts[1]:
+        return None
+    try:
+        return parts[0], parts[1], int(parts[2])
+    except ValueError:
+        return None
+
+
+def shelly_display_name(entry):
+    """What a person calls a discovered Shelly: its own name, else its model."""
+    name = str(entry.get("name", "") or "").strip()
+    if name and not re.fullmatch(r".+-[0-9A-Fa-f]{6}", name):
+        return name     # a name the user set, not the MAC-based default
+    return str(entry.get("label", "") or entry.get("model", "") or "Shelly")
+
+
+def channel_owner(entry, spec, assigned):
+    """(dev_id, dev_name) of the Indigo device already bound to this channel,
+    or None. assigned is {(identity, channel_str): (dev_id, dev_name)} with the
+    identity being a device's stored MAC, or its stored IP when it has no MAC
+    stored (the rule _duplicate_device_ids uses). A MAC never looks like an IP,
+    so the two kinds of key cannot collide."""
+    chan = str(spec.get("channel", 0))
+    for ident in (normalise_mac(entry.get("mac", "")), str(entry.get("ip", "") or "")):
+        if ident and (ident, chan) in assigned:
+            return assigned[(ident, chan)]
+    return None
+
 # Shelly RPC payload keys handled directly by the per-type _poll_* methods.
 # Anything NOT in this set is captured as a dynamic state by
 # _capture_unhandled_fields().  This is a UNION across all device types;
@@ -1717,6 +1846,13 @@ class Plugin(indigo.PluginBase):
         self._link_dirty       = {}   # {dev_id: ts of the first unapplied delta}
         self._link_applied     = {}   # {dev_id: ts of the last pushed write}
         self._link_warned      = set()# ips whose identity refusal was reported
+
+        # ── v4.4.0 discovered Shellys (nothing is created from these) ───────
+        self._discovered       = {}   # {MAC: entry} see _remember_shelly
+        self._discovered_lock  = threading.RLock()
+        self._probing          = set()# ips with a probe in flight
+        self._scan_running     = False
+        self._create_lock      = threading.Lock()   # one Create Indigo Devices run at a time
         self._load_price_prefs(prefs)
 
         log_level = self._pref_int(prefs, "logLevel", logging.INFO)
@@ -2008,6 +2144,7 @@ class Plugin(indigo.PluginBase):
 
     def validateDeviceConfigUi(self, values_dict, type_id, dev_id):
         errors = indigo.Dict()
+        self._validate_pick(values_dict, type_id, dev_id, errors)   # v4.4.0
         ip = values_dict.get("ip_address", "").strip()
         if not ip:
             label = "Gateway IP address is required." if type_id in GATEWAY_CHILD_TYPES else "IP address is required."
@@ -3852,6 +3989,7 @@ class Plugin(indigo.PluginBase):
                 return
             for addr in self._mdns_addresses(info):
                 self._mdns_note(mac, addr)
+                self._probe_soon(mac, addr)     # v4.4.0 discovered list, creates nothing
                 return
         except Exception as exc:
             self.logger.debug(f"mDNS resolve {name}: {exc}")
@@ -6505,6 +6643,449 @@ class Plugin(indigo.PluginBase):
             log(f"[Discovery] Could not create device for {ip}: {exc}", level="ERROR")
             return None
 
+    # ---------------------------------------------------------------------------
+    # Discovered Shellys — remembered, never created automatically (v4.4.0)
+    # ---------------------------------------------------------------------------
+    # Sources: every mDNS advertisement (probed once, re-probed after
+    # DISCOVERED_REPROBE_SECS or when the address changes), the probe-only
+    # subnet scan, and the older Discover Shelly Devices run. Readers: the
+    # "Discovered Shelly" menu in every IP device dialog, and Plugins ->
+    # ShellyDirect -> Create Indigo Devices...
+
+    def _remember_shelly(self, ip, data, label, has_pm, base_type, num_ch,
+                         cover_mode="probe"):
+        """Record one classified Shelly in the discovered list. Returns the entry.
+
+        cover_mode "probe" asks the Shelly (multi-relay devices only); a probe
+        that cannot reach it leaves cover_mode None, and channel_specs() then
+        offers nothing for it rather than guess relay vs blind.
+        """
+        mac = normalise_mac((data or {}).get("mac", ""))
+        if not mac or not ip:
+            return None
+        try:
+            multi = int(num_ch or 1) > 1
+        except (TypeError, ValueError):
+            multi = False
+        if cover_mode == "probe":
+            cover_mode = (self._is_cover_mode(ip)
+                          if base_type == "shellyRelay" and multi else False)
+        entry = {
+            "mac":           mac,
+            "raw_mac":       str(data.get("mac", "") or "").strip(),
+            "ip":            ip,
+            "name":          str(data.get("name", "") or "").strip(),
+            "model":         str(data.get("model", "") or data.get("app", "") or ""),
+            "gen":           str(data.get("gen", "?")),
+            "label":         str(label or ""),
+            "specs":         channel_specs(label, has_pm, base_type, num_ch, cover_mode),
+            "cover_unknown": cover_mode is None,
+            "seen":          time.time(),
+        }
+        with self._discovered_lock:
+            self._discovered[mac] = entry
+        return entry
+
+    def _probe_shelly(self, ip, timeout=2):
+        """Ask whatever answers at ip what it is, and remember it. Creates nothing.
+
+        Returns the entry, or None (not a Gen 2+ Shelly, unreachable, or no
+        controllable type identified). Gen 1 answers 404 here and is skipped:
+        the ShellyGen1 plugin owns those.
+        """
+        if _is_stopping(self) or not ip:
+            return None
+        with self._discovered_lock:
+            if ip in self._probing:
+                return None
+            self._probing.add(ip)
+        try:
+            resp = self._rget(f"http://{ip}/rpc/Shelly.GetDeviceInfo", timeout=timeout)
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+            if not isinstance(data, dict) or not normalise_mac(data.get("mac", "")):
+                return None
+            classified = self._classify_shelly(ip, data, say=self.logger.debug)
+            if classified is None:
+                return None
+            label, has_pm, base_type, num_ch = classified
+            return self._remember_shelly(ip, data, label, has_pm, base_type, num_ch)
+        except Exception as exc:
+            self.logger.debug(f"[Discovered] probe {ip}: {exc}")
+            return None
+        finally:
+            with self._discovered_lock:
+                self._probing.discard(ip)
+
+    def _probe_soon(self, mac, ip, force=False):
+        """Probe a Shelly mDNS has just announced, on a short-lived thread,
+        unless it was probed recently at the same address. Returns the thread
+        or None."""
+        lock = getattr(self, "_discovered_lock", None)
+        mac  = normalise_mac(mac)
+        if lock is None or not mac or not ip or _is_stopping(self):
+            return None
+        with lock:
+            entry = self._discovered.get(mac)
+            fresh = (entry is not None and entry.get("ip") == ip
+                     and not entry.get("cover_unknown")
+                     and (time.time() - entry.get("seen", 0)) < DISCOVERED_REPROBE_SECS)
+            if (fresh and not force) or ip in self._probing:
+                return None
+        worker = threading.Thread(target=self._probe_shelly, args=(ip,), daemon=True)
+        worker.start()
+        return worker
+
+    def _probe_known_shellys(self, force=False, wait=0.0):
+        """Probe every Shelly mDNS currently knows about. With wait > 0, give
+        the probes up to that many seconds to finish so a dialog that asked
+        can show the result straight away."""
+        with self._mdns_lock:
+            known = [(mac, rec[0]) for mac, rec in self._mdns_map.items()]
+        workers = [w for w in (self._probe_soon(mac, ip, force=force) for mac, ip in known) if w]
+        deadline = time.time() + max(0.0, float(wait))
+        for w in workers:
+            left = deadline - time.time()
+            if left <= 0:
+                break
+            w.join(left)
+        return len(workers)
+
+    def _scan_only_thread(self, subnets):
+        """Probe every address on the given /24s and remember the Shellys found.
+        Unlike Discover Shelly Devices, this creates NO Indigo devices."""
+        try:
+            ips = [f"{sn}.{i}" for sn in subnets for i in range(1, 255)]
+            log(f"[Discovered] Scanning {', '.join(f'{sn}.x' for sn in subnets)} for "
+                f"Shellys -- nothing will be created ...")
+            with concurrent.futures.ThreadPoolExecutor(max_workers=SCAN_WORKERS) as pool:
+                results = list(pool.map(lambda a: self._probe_shelly(a, timeout=1), ips))
+            if _is_stopping(self):
+                return
+            found    = [e for e in results if e]
+            assigned = self._assigned_channels()
+            free     = sum(1 for e in found for s in e["specs"]
+                           if channel_owner(e, s, assigned) is None)
+            log(f"[Discovered] Scan complete: {count_words(len(found), 'Shelly device')} "
+                f"found, {count_words(free, 'channel')} not yet in Indigo. Use Plugins -> "
+                f"ShellyDirect -> Create Indigo Devices..., or a device's Discovered "
+                f"Shelly menu.")
+        except Exception as exc:
+            log(f"[Discovered] Scan failed: {exc}", level="ERROR")
+        finally:
+            self._scan_running = False
+
+    def _assigned_channels(self):
+        """{(identity, channel): (dev_id, dev_name)} for every plugin device that
+        owns a Shelly channel. Identity is the stored MAC, or the stored IP
+        when no MAC is stored. Disabled devices still own their channel (they
+        would collide the moment they were enabled). BLU devices live on their
+        gateway's address and own no channel of it."""
+        assigned = {}
+        for dev in indigo.devices.iter("self"):
+            if dev.deviceTypeId in GATEWAY_CHILD_TYPES:
+                continue
+            props = dev.pluginProps
+            chan  = str(props.get("channel_id", "0") or "0")
+            ident = (normalise_mac(props.get("mac_address", ""))
+                     or str(props.get("ip_address", "") or "").strip())
+            if ident:
+                assigned.setdefault((ident, chan), (dev.id, dev.name))
+        return assigned
+
+    def _discovered_entries(self):
+        """Snapshot of the discovered list, sorted by the name a person sees."""
+        with self._discovered_lock:
+            entries = [dict(e) for e in self._discovered.values()]
+        return sorted(entries, key=lambda e: (shelly_display_name(e).lower(), e.get("ip", "")))
+
+    def _lookup_pick(self, key):
+        """(entry, spec) for a Discovered Shelly menu id, or None."""
+        parsed = parse_pick_key(key)
+        if parsed is None:
+            return None
+        mac, type_id, channel = parsed
+        with self._discovered_lock:
+            entry = self._discovered.get(mac)
+            entry = dict(entry) if entry else None
+        if not entry:
+            return None
+        for spec in entry["specs"]:
+            if spec["type_id"] == type_id and spec["channel"] == channel:
+                return entry, spec
+        return None
+
+    @staticmethod
+    def _pick_label(entry, spec):
+        name  = shelly_display_name(entry) + spec.get("suffix", "")
+        model = entry.get("label", "")
+        if model and model != shelly_display_name(entry):
+            return f"{name}  ({entry.get('ip', '')}, {model})"
+        return f"{name}  ({entry.get('ip', '')})"
+
+    # ── Device dialog: Discovered Shelly menu ────────────────────────────────
+
+    def getDiscoveredChannels(self, filter="", valuesDict=None, typeId="", targetId=0):
+        """Discovered channels of THIS device type that no other Indigo device
+        owns. The device being edited keeps its own channel in the list."""
+        try:
+            assigned = self._assigned_channels()
+            rows = []
+            for entry in self._discovered_entries():
+                for spec in entry["specs"]:
+                    if spec["type_id"] != typeId:
+                        continue
+                    owner = channel_owner(entry, spec, assigned)
+                    if owner and owner[0] != targetId:
+                        continue
+                    rows.append((pick_key(entry["mac"], spec["type_id"], spec["channel"]),
+                                 self._pick_label(entry, spec)))
+            head = ("- pick a Shelly found on the network, or type the address below -"
+                    if rows else
+                    "- none found yet: click Refresh, or type the address below -")
+            return [(NO_PICK, head)] + rows
+        except Exception as exc:
+            log(f"Discovered Shelly list failed: {exc}", level="WARNING")
+            return [(NO_PICK, "- list unavailable, see the Event Log -")]
+
+    def discoveredChannelPicked(self, valuesDict, typeId="", devId=0):
+        """Fill the address, channel and power-monitoring fields from the pick.
+        The MAC is stored by validateDeviceConfigUi, and only if the address
+        and channel still match the pick when the dialog is saved."""
+        found = self._lookup_pick(valuesDict.get("shelly_pick"))
+        if not found:
+            return valuesDict
+        entry, spec = found
+        valuesDict["ip_address"] = entry["ip"]
+        valuesDict["channel_id"] = str(spec["channel"])
+        valuesDict["has_pm"]     = bool(spec["has_pm"])
+        if "is_3phase" in spec["extra"]:
+            valuesDict["is_3phase"] = bool(spec["extra"]["is_3phase"])
+        return valuesDict
+
+    def refreshDiscoveredShellys(self, valuesDict=None, typeId="", devId=0):
+        """Re-ask every Shelly mDNS knows about, waiting up to 3 s, so the
+        Discovered Shelly lists show what is on the network now."""
+        try:
+            n = self._probe_known_shellys(force=True, wait=3.0)
+            self.logger.debug(f"[Discovered] refresh: {n} Shelly(s) re-probed")
+        except Exception as exc:
+            log(f"Refreshing discovered Shellys failed: {exc}", level="WARNING")
+        return valuesDict
+
+    def _validate_pick(self, values_dict, type_id, dev_id, errors):
+        """Device dialog save: store the picked Shelly's MAC when the address
+        and channel still match it; refuse a channel another device took while
+        the dialog was open. A pick the user then overrode by typing is
+        dropped, and the typed address is used as before."""
+        key = values_dict.get("shelly_pick", NO_PICK)
+        if not key or key == NO_PICK:
+            return
+        found = self._lookup_pick(key)
+        if not found:
+            return          # list lost (plugin restarted): the typed fields stand
+        entry, spec = found
+        ip   = str(values_dict.get("ip_address", "") or "").strip()
+        chan = str(values_dict.get("channel_id", "0") or "0")
+        if spec["type_id"] != type_id or ip != entry["ip"] or chan != str(spec["channel"]):
+            values_dict["shelly_pick"] = NO_PICK
+            return
+        owner = channel_owner(entry, spec, self._assigned_channels())
+        if owner and owner[0] != dev_id:
+            errors["shelly_pick"] = (f"That channel is already the Indigo device "
+                                     f"\"{owner[1]}\". Pick another, or edit that device.")
+            return
+        values_dict["mac_address"] = entry["raw_mac"] or entry["mac"]
+
+    # ── Plugins -> ShellyDirect -> Create Indigo Devices... ──────────────────
+
+    def getDiscoveredShellys(self, filter="", valuesDict=None, typeId="", targetId=0):
+        try:
+            assigned = self._assigned_channels()
+            rows, with_free = [], 0
+            for entry in self._discovered_entries():
+                total = len(entry["specs"])
+                free  = sum(1 for s in entry["specs"] if channel_owner(entry, s, assigned) is None)
+                if entry.get("cover_unknown"):
+                    state = "relay or blind mode unknown - Refresh to retry"
+                elif free:
+                    state = f"{free} of {total} not in Indigo"
+                    with_free += 1
+                else:
+                    state = "all in Indigo"
+                rows.append((entry["mac"],
+                             f"{shelly_display_name(entry)}  ({entry['ip']}, "
+                             f"{entry.get('label', '')}) - {state}"))
+            if not rows:
+                return [(ALL_SHELLYS, "- none found yet: click Refresh or Scan below -")]
+            head = (f"All discovered Shellys ({count_words(with_free, 'Shelly', 'Shellys')} "
+                    f"with devices to create)")
+            return [(ALL_SHELLYS, head)] + rows
+        except Exception as exc:
+            log(f"Discovered Shellys list failed: {exc}", level="WARNING")
+            return [(ALL_SHELLYS, "- list unavailable, see the Event Log -")]
+
+    def menuScanForShellys(self, valuesDict=None, typeId=""):
+        """Dialog button: probe-only scan of the configured subnets."""
+        if not self.subnets:
+            log("No discovery subnets configured, so there is nothing to scan. Set "
+                "Discovery Subnets in Plugins -> ShellyDirect -> Configure.", level="WARNING")
+        elif self._scan_running:
+            log("[Discovered] A scan is already running.")
+        else:
+            self._scan_running = True
+            threading.Thread(target=self._scan_only_thread, args=(list(self.subnets),),
+                             daemon=True).start()
+        return valuesDict
+
+    def menuCreateDiscoveredDevices(self, valuesDict, typeId=""):
+        """Create the ticked kinds of device for the chosen Shelly (or all),
+        skipping every channel that is already an Indigo device. Network checks
+        and creation run on a worker thread; results go to the Event Log."""
+        errors = indigo.Dict()
+        types  = set()
+        for field, family in CREATE_FAMILIES.items():
+            if as_bool(valuesDict.get(field), True):
+                types.update(family)
+        if not types:
+            errors["inc_relays"] = "Tick at least one kind of device to create."
+            return (False, valuesDict, errors)
+        if self._create_lock.locked():
+            errors["shelly_choice"] = "Devices are still being created from the last run."
+            return (False, valuesDict, errors)
+
+        choice  = valuesDict.get("shelly_choice") or ALL_SHELLYS
+        entries = self._discovered_entries()
+        if choice != ALL_SHELLYS:
+            entries = [e for e in entries if e["mac"] == normalise_mac(choice)]
+        assigned = self._assigned_channels()
+        work = []
+        for entry in entries:
+            wanted = [s for s in entry["specs"]
+                      if s["type_id"] in types and channel_owner(entry, s, assigned) is None]
+            if wanted:
+                work.append(entry)
+        if not work:
+            errors["shelly_choice"] = ("Nothing to create: every matching channel is "
+                                       "already an Indigo device, or nothing has been "
+                                       "found yet (click Refresh or Scan).")
+            return (False, valuesDict, errors)
+        threading.Thread(target=self._create_discovered_thread, args=(work, types),
+                         daemon=True).start()
+        return True
+
+    def _create_discovered_thread(self, entries, types):
+        """Worker for Create Indigo Devices... One device per free channel.
+
+        Before creating, the Shelly is asked for its MAC at the address it
+        will be stored under (mDNS's current address first), so a Shelly that
+        has moved, or an address now held by a different box, is not bound.
+        The owned-channel check is repeated here because a dialog save or a
+        Discover run may have taken a channel since the menu was opened.
+        """
+        with self._create_lock:
+            created, refused = [], []
+            folder_id = self._get_or_create_device_folder()
+            for entry in entries:
+                if _is_stopping(self):
+                    return
+                mac = entry["mac"]
+                ip  = None
+                for candidate in dict.fromkeys(a for a in (self._mdns_lookup(mac), entry["ip"]) if a):
+                    if normalise_mac(self._read_device_mac(candidate)) == mac:
+                        ip = candidate
+                        break
+                name = shelly_display_name(entry)
+                if ip is None:
+                    refused.append(name)
+                    log(f"[Create] {name} ({mac}) did not answer at {entry['ip']} -- "
+                        f"skipped. Click Refresh or Scan and try again.", level="WARNING")
+                    continue
+                here     = dict(entry, ip=ip)
+                assigned = self._assigned_channels()
+                for spec in entry["specs"]:
+                    if spec["type_id"] not in types or channel_owner(here, spec, assigned):
+                        continue
+                    dev_name = self._build_device_name(entry["name"], spec["label"], ip,
+                                                       spec["suffix"])
+                    extra = dict(spec["extra"])
+                    extra["mac_address"] = entry["raw_mac"] or mac
+                    new_dev = self._create_device(ip, spec["type_id"], spec["has_pm"],
+                                                  dev_name, folder_id, extra)
+                    if new_dev:
+                        created.append(new_dev.name)
+                        assigned[(mac, str(spec["channel"]))] = (new_dev.id, new_dev.name)
+                        log(f"[Create] {ip:<18} {entry.get('label', ''):<22} "
+                            f"-- created '{new_dev.name}'")
+            log(f"Create Indigo Devices: {count_words(len(created), 'device')} created"
+                + (f", {count_words(len(refused), 'Shelly', 'Shellys')} skipped (not answering)"
+                   if refused else ""))
+            for n in created:
+                log(f"  [+] {n}")
+
+    def _classify_shelly(self, ip, data, say=None):
+        """(label, has_pm, base_type, num_ch) for the Shelly that answered
+        Shelly.GetDeviceInfo with data, or None when no controllable Indigo
+        type could be identified (it is retried next time).
+
+        Moved out of _discover_thread unchanged in v4.4.0 so the probe-only
+        scan and mDNS probes classify a Shelly exactly as discovery does.
+        say is the logger for the per-device lines (discovery: log; the quiet
+        background probes: self.logger.debug).
+        """
+        say   = say or log
+        app   = data.get("app",   "")
+        model = data.get("model", app or "Unknown")
+        info  = app_info_for(app)
+
+        if info:
+            label, has_pm, base_type, num_ch = info
+        else:
+            # App not in the curated APP_INFO table — classify from the
+            # device's live component set (Shelly.GetConfig) instead of
+            # blindly assuming a single relay. Without this, an unknown
+            # model that is really a dimmer/cover/RGBW/multi-channel was
+            # created as the wrong type (or lost channels). detect_shelly_
+            # devices returns one spec per channel; feed the first spec's
+            # type + the channel count into the existing creation logic
+            # below (which already handles num_ch channels + cover mode).
+            specs = []
+            try:
+                cfg = self._rget(f"http://{ip}/rpc/Shelly.GetConfig", timeout=1)
+                if cfg.status_code == 200:
+                    specs = detect_shelly_devices(data, list(cfg.json().keys()))
+            except Exception:
+                specs = []
+            if specs:
+                base_type = specs[0]["device_type_id"]
+                has_pm    = bool(specs[0]["has_pm"])
+                num_ch    = len(specs)
+                label     = model
+                # v3.13: switch-classified unknowns get one PM probe —
+                # the component heuristic (pm1/em only) marked PM-capable
+                # relays as no-PM and their power data was then discarded.
+                if base_type == "shellyRelay" and not has_pm:
+                    try:
+                        sw = self._rget(f"http://{ip}/rpc/Switch.GetStatus?id=0",
+                                        timeout=1)
+                        if sw.status_code == 200 and "apower" in (sw.json() or {}):
+                            has_pm = True
+                    except Exception:
+                        pass
+                say(f"[Discovery] {ip:<18} app={app or '(none)'} not in table "
+                    f"-- classified from components as {base_type} x{num_ch}")
+            else:
+                # v3.13: honour the classifier's contract — an EMPTY spec
+                # list means no controllable components were found, so
+                # never persist a guessed relay. (A GetConfig FAILURE
+                # also lands here; the device is retried next run.)
+                say(f"[Discovery] {ip:<18} app={app or '(none)'} not in "
+                    f"table and no controllable components identified "
+                    f"-- skipped (will retry next discovery)")
+                return None
+        return label, has_pm, base_type, num_ch
+
     def _discover_thread(self, subnet):
         found         = []
         created       = []
@@ -6526,59 +7107,15 @@ class Plugin(indigo.PluginBase):
                     continue
 
                 data  = resp.json()
-                app   = data.get("app",   "")
-                model = data.get("model", app or "Unknown")
                 name  = data.get("name",  "")
                 mac   = data.get("mac",   "")
                 gen   = data.get("gen",   "?")
-                info  = app_info_for(app)
-
-                if info:
-                    label, has_pm, base_type, num_ch = info
-                else:
-                    # App not in the curated APP_INFO table — classify from the
-                    # device's live component set (Shelly.GetConfig) instead of
-                    # blindly assuming a single relay. Without this, an unknown
-                    # model that is really a dimmer/cover/RGBW/multi-channel was
-                    # created as the wrong type (or lost channels). detect_shelly_
-                    # devices returns one spec per channel; feed the first spec's
-                    # type + the channel count into the existing creation logic
-                    # below (which already handles num_ch channels + cover mode).
-                    specs = []
-                    try:
-                        cfg = self._rget(f"http://{ip}/rpc/Shelly.GetConfig", timeout=1)
-                        if cfg.status_code == 200:
-                            specs = detect_shelly_devices(data, list(cfg.json().keys()))
-                    except Exception:
-                        specs = []
-                    if specs:
-                        base_type = specs[0]["device_type_id"]
-                        has_pm    = bool(specs[0]["has_pm"])
-                        num_ch    = len(specs)
-                        label     = model
-                        # v3.13: switch-classified unknowns get one PM probe —
-                        # the component heuristic (pm1/em only) marked PM-capable
-                        # relays as no-PM and their power data was then discarded.
-                        if base_type == "shellyRelay" and not has_pm:
-                            try:
-                                sw = self._rget(f"http://{ip}/rpc/Switch.GetStatus?id=0",
-                                                timeout=1)
-                                if sw.status_code == 200 and "apower" in (sw.json() or {}):
-                                    has_pm = True
-                            except Exception:
-                                pass
-                        log(f"[Discovery] {ip:<18} app={app or '(none)'} not in table "
-                            f"-- classified from components as {base_type} x{num_ch}")
-                    else:
-                        # v3.13: honour the classifier's contract — an EMPTY spec
-                        # list means no controllable components were found, so
-                        # never persist a guessed relay. (A GetConfig FAILURE
-                        # also lands here; the device is retried next run.)
-                        log(f"[Discovery] {ip:<18} app={app or '(none)'} not in "
-                            f"table and no controllable components identified "
-                            f"-- skipped (will retry next discovery)")
-                        skipped.append(ip)
-                        continue
+                classified = self._classify_shelly(ip, data)
+                if classified is None:
+                    skipped.append(ip)
+                    continue
+                label, has_pm, base_type, num_ch = classified
+                self._remember_shelly(ip, data, label, has_pm, base_type, num_ch)
 
                 found.append(ip)
 

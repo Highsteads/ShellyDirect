@@ -54,12 +54,16 @@ When the scan finishes, the Event Log says how many Shellys it found and how man
 
 Battery sensors such as the H&T, Smoke and Flood sleep between readings, so the scan usually misses them. Add those by hand, as below, after pressing the sensor's button to wake it.
 
+### Choosing which Shellys to add
+
+If you would rather not have every Shelly added at once, choose **Plugins → Shelly Direct → Create Indigo Devices...** instead. It lists the Shellys the plugin has found, lets you pick one or all of them and the kinds of device you want, and creates only the ones you do not have yet. **Scan Subnets** in that dialog checks every address in your ranges first, without creating anything.
+
 ## Adding a Shelly by hand
 
 1. In Indigo, choose **New Device**.
 2. Set **Type** to **Shelly Direct**, then pick the model — the [Your devices](devices.md) page says which to choose.
-3. Type the Shelly's network address into **IP Address**. The Shelly app shows it under the device's settings.
-4. On a Shelly with more than one output, pick the **Channel**, and make one device for each output.
+3. Open the **Discovered Shelly** menu at the top. If your Shelly is listed, pick it: the address, the channel and the power-monitoring setting are filled in for you. If it is not listed, click **Refresh Discovered Shellys**, or type the Shelly's network address into **IP Address**. The Shelly app shows it under the device's settings.
+4. On a Shelly with more than one output, pick the **Channel**, and make one device for each output. The **Discovered Shelly** menu lists each output separately.
 5. Click **Save**.
 
 ## 4. Check it works
