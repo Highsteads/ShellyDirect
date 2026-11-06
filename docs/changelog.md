@@ -7,6 +7,12 @@ nav_order: 15
 
 The newest version is at the top.
 
+## 4.4.1 — 6 November 2026
+
+**A scan no longer adds a Shelly twice.**
+
+- **Discover Shelly Devices could make a second copy of a device.** If you ran **Create Indigo Devices...** while a scan was still running, the scan could reach the same Shelly and add it again, for example `Conservatory Test Plug (2)`. The scan now checks Indigo again for each Shelly before it adds anything. If you already have a duplicate, delete one of the two devices.
+
 ## 4.4.0 — 2 November 2026
 
 **Choose which Shellys become Indigo devices.**

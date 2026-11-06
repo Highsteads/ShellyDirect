@@ -3,9 +3,16 @@
 # Filename:    plugin.py
 # Description: Shelly Gen 2/3/4 direct-to-Indigo control plugin
 #              Relay, Cover, Dimmer, RGBW, Energy Meter, Sensors
-# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2, 4.3.4, 4.3.6); Claude Sonnet 5.5 (4.3.3, 4.3.5)
-# Date:        02-11-2026
-# Version:     4.4.0
+# Author:      CliveS & Claude Opus 5; Claude Opus 5.5 (3.18.4 - 4.3.2, 4.3.4, 4.3.6); Claude Sonnet 5.5 (4.3.3, 4.3.5, 4.4.1)
+# Date:        06-11-2026
+# Version:     4.4.1
+#
+# v4.4.1 (06-11-2026): a Scan no longer duplicates a device made while it ran.
+#   * Discover Shelly Devices took its list of existing MACs and addresses when
+#     the scan began and trusted it for the whole run. Create Indigo Devices... run
+#     during the scan made 'Conservatory Test Plug', then the scan reached the
+#     same plug and made 'Conservatory Test Plug (2)'. The scan now takes
+#     _create_lock for each Shelly it answers from and re-reads both lists.
 #
 # v4.4.0 (02-11-2026): find Shellys without creating them, then choose.
 #   * Discovered list. Every Shelly mDNS announces is probed once (GetDeviceInfo,
@@ -7436,6 +7443,7 @@ class Plugin(indigo.PluginBase):
 
         for i in range(1, 255):
             ip = f"{subnet}.{i}"
+            holding_create_lock = False
             if i % 64 == 0:
                 # v3.15: progress feedback — a sparse subnet used to mean
                 # minutes of total silence.
@@ -7458,6 +7466,16 @@ class Plugin(indigo.PluginBase):
                 self._remember_shelly(ip, data, label, has_pm, base_type, num_ch)
 
                 found.append(ip)
+
+                # v4.4.1: the two snapshots above were taken when the scan
+                # started, which can be minutes ago. Create Indigo Devices may
+                # have made this very Shelly since (live-hit 06-Nov-2026: a
+                # second 'Conservatory Test Plug (2)'). Take the create lock,
+                # which that menu holds while it works, and re-read both.
+                self._create_lock.acquire()
+                holding_create_lock = True
+                existing_ips  = self._existing_device_ips()
+                existing_macs = self._existing_device_macs()
 
                 # MAC-based match: device moved to a new IP — update the existing
                 # Indigo device rather than creating a duplicate.
@@ -7614,6 +7632,9 @@ class Plugin(indigo.PluginBase):
 
             except Exception:
                 pass
+            finally:
+                if holding_create_lock:
+                    self._create_lock.release()
 
         # v3.15: say which configured devices on this subnet were NOT seen —
         # discovery used to report only what it found.

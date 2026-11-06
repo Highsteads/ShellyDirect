@@ -2,7 +2,7 @@
 
 **Control and watch the Shelly Plus, Pro, Gen 3 and Gen 4 range from Indigo, straight over your home network.**
 
-**Version:** 4.4.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
+**Version:** 4.4.1 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later
 
 **[Read the full guide](https://highsteads.github.io/ShellyDirect/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -54,6 +54,8 @@ For the older Gen 1 Shellys, such as the original Shelly 1, use my other plugin,
 Battery sensors sleep, so discovery usually misses them. Add those by hand with **New Device**. The [full guide](https://highsteads.github.io/ShellyDirect/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v4.4.1** — A scan no longer adds a Shelly twice. If you ran **Create Indigo Devices...** while a scan was still running, the scan could add the same Shelly again. It now checks Indigo again for each Shelly first.
 
 **v4.4.0** — Choose which Shellys become Indigo devices. The plugin now notices Shellys on your network by itself without creating anything. **New Device** has a **Discovered Shelly** menu: pick a Shelly from it and the address and channel are filled in for you. It only lists channels that are not already an Indigo device. A new menu item, **Plugins → Shelly Direct → Create Indigo Devices...**, creates devices for one Shelly or all of them, only for the kinds you tick, and skips anything you already have. **Discover Shelly Devices** works exactly as before. Gen 4 relays and dimmers also gain an **input0** state that shows when the switch or button wired to them is closed, read over Modbus for a button input if you have switched Modbus on in the Shelly's settings.
 
